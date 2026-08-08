@@ -7,7 +7,7 @@
 │                                                               │
 │   :7681  HTTP ──┬─ /              会话列表页(很薄)            │
 │                 ├─ /s/<name>/     attach 某个会话 → 终端网页    │
-│                 ├─ /api/…         会话管理 + 程序化 I/O         │
+│                 ├─ /api/…         会话管理 + send-keys          │
 │                 └─ /tty/          → ttyd  127.0.0.1:<随机>     │
 │                                                               │
 │   unix socket   $XDG_RUNTIME_DIR/tmuxd/default.sock (0600)    │
@@ -22,7 +22,7 @@
    └─  由 tmuxd 全权管理;你自己的 `tmux` 在 default socket 上,互不相干(§2.1)
 ```
 
-**只暴露一个端口。** 终端网页、管理接口、I/O 接口在同一个 origin 下,
+**只暴露一个端口。** 终端网页和管理接口在同一个 origin 下,
 省掉跨域、省掉两套鉴权、`-p 7681:7681` 一句话就完事。
 
 | 监听 | 地址 | 默认 | 用途 |
@@ -74,7 +74,7 @@ tmuxd daemon (uvicorn)                    tmux server (-L tmuxd)
 ```
 启动时只做两件事:
   which tmux          →  TMUXD_TMUX_BIN 可覆盖,默认取 PATH
-  tmux -V             →  低于 3.0 直接拒绝启动(window-size / new-session -x/-y 要用)
+  tmux -V             →  低于 3.0 直接拒绝启动(要用 `window-size`,tmux 2.9 才有)
 ```
 
 **不去发现已有的 tmux server,不去接管用户正在用的会话,不读 `~/.tmux.conf`**
@@ -93,12 +93,12 @@ tmuxd daemon (uvicorn)                    tmux server (-L tmuxd)
 
 **为什么必须专属,而不是提供一个"接管现有 tmux"的开关:**
 
-- **tmuxd 要能对这批会话全权负责。** 对账([02 §7](02-session.md))、无中生有、GC、
-  按 URI 派生名字 —— 这些都建立在"这个 socket 里的东西都是我开的"之上。
+- **tmuxd 要能对这批会话全权负责。** 对账([02 §7](02-session.md))、无中生有、GC ——
+  这些都建立在"这个 socket 里的东西都是我开的"之上。
   一旦掺进用户手工开的工作会话,每条规则都得多一句"除非这是用户的",
   而"用户的"和"我的"根本没有可靠的判据;
 - **反过来更要紧:tmuxd 绝不该动你的工作会话。** 一个后台服务在你自己的 tmux 里
-  改尺寸、跑 `pipe-pane`、甚至在 GC 时看着你那个跑了三天的会话 —— 光是"它有能力这么做"
+  往里面敲字、改配置、甚至在 GC 时盯着你那个跑了三天的会话 —— 光是"它有能力这么做"
   就已经不可接受了。专属 socket 让这件事在物理上不可能;
 - **副作用是干净的心智模型**:`tmux ls` 是你的,`tmuxd ls` 是它的,两份清单永不相交。
 
@@ -156,7 +156,7 @@ docker run -d --name tmuxd -p 7681:7681 \
 
 **"tmuxd 重启会话无损"是这个产品最该被验收的一条性质**,M1 就要有测试:
 `tmuxd new -s a && kill -9 <pid> && tmuxd start && tmuxd ls` 必须还看得见 `a`,
-而且 `capture` 出来的内容和挂之前一致。
+而且 attach 回去,现场和挂之前一模一样。
 
 ## 5. 状态存哪
 
@@ -166,11 +166,11 @@ docker run -d --name tmuxd -p 7681:7681 \
 ~/.tmuxd/                        # TMUXD_STATE_DIR 可覆盖(容器里指向挂载卷)
 ├── instance.json                # pid / 监听 / ttyd 端口 / tmux socket / 启动时刻
 ├── token                        # 0600
-└── sessions/<name>.json         # {name, uri, cwd, cmd, kind, created_at, last_attached}
+└── sessions/<id>.json           # {id, cwd, cmd, created_at, last_attached}
 ```
 
-一条 `sessions/<name>.json` 记的是 tmux **答不上来的那部分**:这个会话当初是用哪条 URI 开的、
-起始工作目录、启动命令、上次被 attach 是什么时候。tmux 只知道"有个叫 work 的会话现在活着"。
+一条 `sessions/<id>.json` 记的是 tmux **答不上来的那部分**:起始工作目录、启动命令、
+什么时候建的、上次被 attach 是什么时候。tmux 只知道"有个叫 work 的会话现在活着"。
 
 读写纪律照搬 shellbase(它这套已经跑通了):
 
@@ -195,17 +195,13 @@ docker run -d --name tmuxd -p 7681:7681 \
 | `TMUXD_STATE_DIR` | `~/.tmuxd` | 状态目录 |
 | `TMUXD_WORKSPACE` | daemon 的 cwd | 新会话的默认工作目录 |
 | `TMUXD_SHELL` | `$SHELL` | 不带命令的会话跑什么 |
-| `TMUXD_COLS` / `TMUXD_ROWS` | `120` / `40` | 新会话的尺寸;**没人 attach 时它决定折行宽度**(见 [03 §3](03-io.md)) |
-| `TMUXD_HISTORY_LIMIT` | `10000` | 写进 tmux.conf 的 `history-limit`,决定 `capture -S -` 能回滚多远 |
-| `TMUXD_RECORD` | 关 | 开启输出录制(见 [03 §5](03-io.md)) |
-| `TMUXD_RECORD_LIMIT` | `50MB` | 单个会话录制文件的环形截断上限 |
+| `TMUXD_HISTORY_LIMIT` | `10000` | 写进 tmux.conf 的 `history-limit`,决定人在网页里能往回滚多远 |
 | `TMUXD_GC_TTL` | `7d` | `exited` 的 state 记录保留多久(见 [02 §7](02-session.md)) |
-| `TMUXD_ALIASES` | 空 | JSON,URI scheme 别名(见 [02 §3](02-session.md)) |
 
 随包 `tmux.conf` 只定三件必须定的事,其余一概不碰用户习惯:
 
 ```conf
-set -g history-limit 10000        # capture -S - 能回滚多远
+set -g history-limit 10000        # 人在网页里能往回滚多远
 set -g window-size latest         # 多客户端尺寸不一时跟随最后操作的那个,别被最小窗口截断
 set -g status off                 # 一个会话就是一个终端,没有 window 可切,状态栏纯属噪音
 ```
@@ -228,7 +224,7 @@ tmuxd 只是不为分屏提供任何 API,操作一律落在活动 pane 上(02 §
 **只有一个权限档:全部可读可写。** 分享 token 收窄的是**能碰哪个会话**和**能碰多久**,
 不是能不能写 —— tmuxd 这一层不做只读,理由与"该往哪层锁"见 [02 §4](02-session.md)。
 
-鉴权是包在 ASGI 应用**最外层**的一道门(`AuthGate`),HTTP 与 WebSocket 一视同仁:
+鉴权是包在 ASGI 应用**最外层**的一道门(`AuthGate`),HTTP 与 ttyd 那条 WS 一视同仁:
 没有有效令牌,任何请求都到不了下游路由,WS 在 accept 之前就被关掉,握手不会建立。
 放行名单只有三项:`/login`、`POST /api/auth/login`、`GET /api/health`。
 **新增路由默认受保护 —— 这个默认方向是有意的。**
@@ -257,7 +253,7 @@ v1 不做证书自动化。
 > **实测(2026-08-08,本机)**:tmux 3.3a、ttyd 1.7.7。
 > `ttyd --help` 确认 `-a/--url-arg`、`-W/--writable`(**readonly by default**)、
 > `-b/--base-path`、`-p 0` 随机端口均在。
-> tmux 侧 `capture-pane -p -J -e -S -`、`send-keys -l`、`pipe-pane -o`、
+> tmux 侧 `new-session -d`、`has-session -t "=name"`、`attach-session`、`send-keys -l`、
 > `display -p '#{pane_current_command}'`、`set -g window-size latest` 全部可用。
 > 换版本时复核这一段即可。
 
@@ -272,14 +268,13 @@ tmuxd/
 ├── server/tmuxd/
 │   ├── main.py               # FastAPI 实例、启动钩子(拉 ttyd、建状态目录、打 token)
 │   ├── gateway.py            # AuthGate + 静态托管 + ttyd 反代
-│   ├── cli.py                # serve / start / stop / status + 全部子命令(见 05)
-│   ├── sessions.py           # 会话 CRUD、attach 302、对账(见 02)
-│   ├── io.py                 # keys / capture / run / stream(见 03)
+│   ├── cli.py                # serve / start / stop / status + 全部子命令(见 04)
+│   ├── sessions.py           # 会话 CRUD(id + cwd + cmd)、attach 302、对账(见 02)
+│   ├── keys.py               # 唯一的写入动作:send-keys(见 03 §5)
 │   ├── tmux.py               # 唯一一处拼 tmux 命令行的地方
-│   ├── uri.py                # URI 规范化 → 会话名(见 02 §2)
 │   ├── state.py              # 原子写、对账、回收
 │   └── auth.py               # login / verify / logout + 分享 token 签发
-├── sdk/tmuxd_client/         # Python SDK(见 04 §4)
+├── sdk/tmuxd_client/         # Python SDK(见 03 §8)
 └── web/                      # 会话列表页 + attach 壳页(很薄)
 ```
 

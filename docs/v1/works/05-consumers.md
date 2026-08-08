@@ -1,4 +1,4 @@
-# 06 · 谁在用它
+# 05 · 谁在用它
 
 tmuxd 是**被剥离出来的东西**,不是凭空长出来的:shellbase 里那套
 "ttyd + tmux + attach.sh + 终端注册表"已经跑通了,只是被焊死在一个 Web 工作台里。
@@ -26,38 +26,51 @@ shellbase(`docs/v1/works/design.md`)是一个 Web 工作台:
 
 具体到接口:
 
+**URI 那层留在 shellbase,不下沉。** 它本来就有一套"规范化 URI → 内部会话名"的确定性映射
+(uri.md §4);切过来之后这套映射**一个字都不用改**,只是产物换了个去处 ——
+从"自己 `tmux new-session` 用的会话名"变成"传给 tmuxd 的 id"。
+
 ```
-旧:iframe.src = /api/terminals/attach?uri=<完整 URI>          → 302 /tty/?arg=<内部名>
-新:iframe.src = /tmuxd/api/attach?target=<同一条完整 URI>      → 302 …/tty/?arg=<派生名>
+shellbase:  claude:///workspace/proj?window=main&block=2
+                     │  自己规范化、自己派生(它本来就在做这件事)
+                     ▼
+              id = "main--claude-workspace-proj-2"   cwd = "/workspace/proj"   cmd = "claude"
+                     │
+                     ▼
+tmuxd:        只收这三个字段,不问它们怎么来的([02 §2.2](02-session.md))
+```
+
+具体到接口:
+
+```
+旧:iframe.src = /api/terminals/attach?uri=<完整 URI>
+新:iframe.src = /tmuxd/api/attach?id=<派生 id>&cwd=<…>&cmd=<…>
+    ← attach 上带 cwd/cmd,所以还是**一次请求就落位**,不用先 POST 再跳(02 §3)
 
 旧:DELETE /api/terminals?uri=<完整 URI>
-新:DELETE /tmuxd/api/sessions/<派生名>        # 或让 shellbase 保留一层按 uri 的薄转发
+新:DELETE /tmuxd/api/sessions/<派生 id>
 
 旧:GET /api/terminals?window=<id>
-新:GET /tmuxd/api/sessions,shellbase 自己按 uri 的 window 参数过滤
+新:GET /tmuxd/api/sessions,shellbase 自己按 id 前缀过滤(前缀就是它自己编的)
 ```
 
-**关键:shellbase 的完整 URI 原样往下传。** tmuxd 不解释 `window` / `block`,
-只承诺"规范化后不同即不同会话"([02 §2.1](02-session.md))——
-所以 shellbase 的归属不变量、`block` 隔离、重入语义**一个字都不用改**,
-它们本来就是建立在"同一条 URI = 同一个现场"之上的。
+**三处策略必须留在 shellbase,不能下沉:**
 
-**两处策略必须留在 shellbase,不能下沉:**
-
-1. **"关闭即销毁"**(backend.md §4.2)——关掉块要杀会话,这是 shellbase 知道的事,
-   tmuxd 不知道([02 §6](02-session.md))。所以是 shellbase 在关块时显式发 `DELETE`;
-2. **`window` / `block` 的分配与补全**(uri.md §4)——落位时算最小空闲 `block` 号,
-   是布局层的职责。tmuxd 只在拿到两条不同 URI 时给出两个不同会话。
+1. **URI 的语义与派生规则**(uri.md §4)——`window` / `block` 是什么、
+   scheme 怎么映射成命令、别名表怎么查,全是布局层的方言。
+   一个下层为一个上层的方言长概念,是这类分层最典型的烂掉方式([02 §2.2](02-session.md));
+2. **`block` 号的分配与补全**——落位时算最小空闲序号,同样是布局层的职责。
+   tmuxd 只保证"两个不同的 id 是两个不同的现场";
+3. **"关闭即销毁"**(backend.md §4.2)——关掉块要杀会话,这是 shellbase 知道的事,
+   tmuxd 不知道([02 §6](02-session.md))。所以是 shellbase 在关块时显式发 `DELETE`。
 
 反过来,shellbase 会**白拿**几样它现在没有的:
 
-- **程序化 I/O**([03](03-io.md))。shellbase 的 api/terminals.md 里明写着
-  "不做的事:终端输入/输出",理由是"程序化需求用 tmux 自己的 `send-keys`/`capture-pane`
-  在终端里解决"。那个理由在 shellbase 的处境下是对的(用户就在容器里,手边就有 shell);
+- **从外面往会话里敲**([03 §5](03-api-and-sdk.md))。shellbase 的 api/terminals.md 里明写着
+  "不做的事:终端输入/输出",理由是"程序化需求用 tmux 自己的 `send-keys` 在终端里解决"。
+  那个理由在 shellbase 的处境下是对的(用户就在容器里,手边就有 shell);
   但一旦终端变成独立服务,**调用方可能根本不在那台机器上**,`send-keys` 就够不着了。
-  所以 tmuxd 必须补上这一层 —— 这是本次剥离带来的**唯一一处能力扩张**,
-  也是 shellbase 顺带获得的:它以后想做"给 Agent 块发一条指令"或"把 Agent 的输出喂给模型",
-  接口已经在了;
+  所以 tmuxd 补上了这一个动作 —— 也是本次剥离**唯一**的能力扩张;
 - **单个终端的分享链接**(`share`)。shellbase 的协作是 window 粒度的(collab.md §3),
   没法单独把一个终端交出去;tmuxd 的 `share` 签的是限定到单会话、带过期的 token,
   补上了这条。注意它**不是只读** —— 只读要在 shellbase 那层判([02 §4](02-session.md));
@@ -75,10 +88,10 @@ tmuxd 就是那句话去掉后半段 —— **字符版的本体**。两边刻�
 | --- | --- | --- |
 | session 里是什么 | 一个 tmux 会话 | 一整套 kasm + Chrome + sessiond |
 | 往里敲 | `POST /keys`(`send-keys`) | `POST /api/act`(点击/输入) |
-| 读出来 | `GET /capture`(`capture-pane`) | `GET /api/observe`(元素表 + 标注截图) |
+| 读出来 | **不提供** —— 归人(attach)或 ssh | `GET /api/observe`(元素表 + 标注截图) |
 | 人怎么看 | ttyd 的网页 | KasmVNC 的画面 |
 | 分享 | 限范围 + 限时,**不限读写** | 默认只读(抄 ttyd) |
-| 历史 | scrollback / 录制 | 操作日志 |
+| 历史 | tmux 自己的 scrollback,人往回滚 | 操作日志 |
 | **需要 runtime 抽象吗** | **不需要** —— 只有一种拉法,而且不跟着 daemon 死 | 需要 —— container / process / remote 三种 |
 | **做 pane / tab 分屏吗** | 不做 —— 一个会话就是一个终端 | 不做 —— 一块 VNC 屏只显示一个 tab |
 | 默认部署形态 | pip 装在机器上 | 容器 |
@@ -93,11 +106,16 @@ tmuxd 就是那句话去掉后半段 —— **字符版的本体**。两边刻�
   webmuxd 是因为做不到(一块 VNC 屏只显示一个 tab),tmuxd 是因为不该做
   (调用方本来就在做)。殊途同归:**一个 session 就是一块屏。**
 
-错误码的二分(能自愈的 vs 该告警的)、`-t` 目标语法、幂等键、
-"不给 `-t` 又有多个会话就报错不猜"——这些约定两边一致,是为了让**同一个调用方**
-同时驱动一个终端和一个浏览器时,手感是一套。
+还有第三处更根本的:**webmuxd 读,tmuxd 不读。** 那边必须读 ——
+`observe()` 是喂给多模态模型的观测层,没有它 webmuxd 就只是个远程浏览器。
+这边不必读 —— 终端的"读"人自己会,而程序要的那种读(干净的 stdout、退出码)
+ssh 给得更好([03 §1](03-api-and-sdk.md))。**同一个问题,两边的答案不同,
+是因为对面没有一个叫 ssh 的现成答案。**
 
-一个自然的组合:webmuxd 负责"看网页、点按钮",tmuxd 负责"跑命令、看输出",
+错误码的二分(能自愈的 vs 该告警的)、幂等键、"不给 `-t` 又有多个会话就报错不猜"
+——这些约定两边一致,是为了让**同一个调用方**同时驱动一个终端和一个浏览器时,手感是一套。
+
+一个自然的组合:webmuxd 负责"看网页、点按钮",tmuxd 负责"往终端里投喂",
 上面一个编排程序把两只手接起来。谁都不必知道对方存在。
 
 ## 3. 直接用它的场景
@@ -115,13 +133,15 @@ pip install tmuxd && tmuxd start
 tmuxd 的会话池在自己的 socket 上([01 §2.1](01-server.md))。
 装一个服务不该动到你手里正在跑的东西。
 
-**② Agent 宿主。** 在若干个仓库目录里各跑一个 CLI Agent,程序化投喂任务、
-程序化读输出,同时给每个会话一条分享链接贴进工单 —— 人随时能看、能接管。
-代码见 [04 §5](04-api-and-sdk.md)。
+**② Agent 宿主。** 在若干个仓库目录里各跑一个 CLI Agent,程序化投喂任务,
+同时给每个会话一条分享链接贴进工单 —— 人随时能看、能接管。
+代码见 [03 §8](03-api-and-sdk.md)。**这是它最贴合的场景**:
+派活是程序的事,判断干得怎么样是人的事,两件事各归各位。
 
-**③ 远程运维 / CI。** 需要"在那台机器的那个会话里"跑命令(有环境、有现场、有人盯着),
-而不是起一个干净的 ssh。`tmuxd -H … run --exit-code` 就是这个用途。
-不需要这个"现场"属性的批处理,**请用 ssh**([03 §4](03-io.md))。
+**③ 长跑任务的门面。** 一个要跑几小时、中间可能需要人插手的任务
+(迁移脚本、构建、交互式部署),开在 tmuxd 的会话里而不是 ssh 里 ——
+断线不丢现场,谁都能点开链接看一眼、接手敲两下。
+**纯批处理不需要这个,请用 ssh**([03 §1](03-api-and-sdk.md))。
 
 **④ 结对 / 教学。** `tmuxd share` 出一条链接,对方浏览器打开就进了同一个终端 ——
 看得见,也能直接接手。tmux 的 pair programming,不用给对方开账号。
@@ -137,13 +157,14 @@ tmuxd 的会话池在自己的 socket 上([01 §2.1](01-server.md))。
 | **多个终端的组织方式**(window / pane / 标签) | 调用方 —— 要几个终端就开几个会话([02 §1](02-session.md)) |
 | 布局 / 分屏画布 / 标签页 | 调用方(shellbase 的 window + 网格剖分) |
 | "关闭块就杀会话"这类回收策略 | 调用方([02 §6](02-session.md)) |
-| URI 里 `window` / `block` 的语义 | 调用方([02 §2.1](02-session.md)) |
+| **URI / 寻址协议**(怎么从自己的世界算出一个 id) | 调用方([02 §2.2](02-session.md)) |
 | 文件管理 / 编辑器 / 浏览器面板 | 调用方(shellbase 的 files / browser) |
 | 全局环境变量表、凭据自助配置 | 调用方(shellbase 的 env.md) |
 | 多用户、按人授权谁只读谁可写 | 上游的认证系统;tmuxd 只有一个 token |
 | 跨机器编排、会话池、调度 | 编排程序;每台机器各跑一个 tmuxd |
-| 输出的结构化理解 | 调用方或模型([03 §6](03-io.md)) |
+| **读终端内容**(抓屏、拿退出码、输出流) | 人(attach)或 ssh([03 §1](03-api-and-sdk.md)) |
 
 > 判断标准始终是那一句:**tmux 会做这个吗?** 不会就别加。
-> tmuxd 多出来的东西只有三样 —— HTTP 门面、URI 寻址、程序化 I/O ——
+> 而 tmuxd 比 tmux 多出来的东西,减到最后只剩两样 —— **HTTP 门面**和 **`send-keys` 的远程版**。
 > 每一样都得能说清"为什么 tmux 没有它就够用,而做成服务之后就不够了"。
+> 说不清的,上一版里都已经删掉了。

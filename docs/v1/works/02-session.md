@@ -27,7 +27,7 @@ tmux 的另一半能力 —— window / pane 那套多路复用 —— **不用,
 
 - **target 退化成一个名字。** 没有 `work:1.2`、没有 `%7`、没有 tmux 那套目标语法要学
   ——调用方只需要知道会话叫什么;
-- **`keys` / `capture` / `run` 不用选 pane。** 少一个参数,也少一整类"打到别的 pane 里去了"的 bug;
+- **`keys` 不用选 pane。** 少一个参数,也少一整类"打到别的 pane 里去了"的 bug;
 - **`#{pane_current_command}` 直接就是会话的状态**,不用先问"哪个 pane 是活动的";
 - **和 webmuxd 对称了。** 那边不做 pane(一块 VNC 屏同时只显示一个 tab),这边也不做,
   两个产品的模型是同一个形状。
@@ -41,108 +41,77 @@ tmux 的另一半能力 —— window / pane 那套多路复用 —— **不用,
 tmuxd 一行特判都不用写。
 
 会话池是 tmuxd 专属的([01 §2.1](01-server.md)),所以"多 window/pane 的会话"只能是
-attach 进去的人自己分出来的。规则一样:能 attach、能 capture、能 send,只认活动的那个。
+attach 进去的人自己分出来的。规则一样:能 attach、能 send,只认活动的那个。
 tmuxd 不假装看不见它们,也不假装能管它们。
 
-## 2. 身份:名字,或者 URI
+## 2. 身份:一个 id
 
-会话的身份是 **tmux 会话名**。找到它有两条路:
+**一个会话就三个字段:**
 
-| 寻址方式 | 长什么样 | 谁用 |
-| --- | --- | --- |
-| **名字** | `work` | 人、CLI、脚本 |
-| **URI** | `claude:///home/me/proj?window=main&block=2` | 平台(shellbase 这类调用方) |
-
-`target` 参数**同时接受两种**:不含 `://` 的按名字解析,含的先规范化成 URI 再确定性派生名字。
-一条规则,不需要两套端点。
-
-### 2.1 为什么要有 URI 这条路
-
-因为调用方是程序时,"想个名字"这件事本身就是个负担,而且它需要的是**重入**:
-同一个块、同一个页面、下次再打开,要接回同一个现场。名字得由某种确定性规则生成,
-否则调用方就得自己维护一张"块 → 会话名"的表 —— 那张表一旦和现实漂移就全乱了。
-
-URI 把这张表消掉了:**一条字符串自包含地指认一个现场**,规范化后确定性派生会话名。
-调用方不存表,重入就是把同一条 URI 再解析一遍。
-
-这套语义是从 shellbase 抄下来的(shellbase `docs/v1/works/uri.md`),
-但**只抄机制,不抄语义**:
-
-> **tmuxd 不解释 URI 的含义,只承诺"规范化后不同即不同会话"。**
-
-shellbase 的 `window` / `block` 是它自己的布局概念,tmuxd 眼里它们只是 query 里两个
-参与身份的字符串。tmuxd 既不知道什么是 window,也不校验它 —— 这个切口划在这里,
-是为了让布局语义留在布局那一层,别渗进终端服务。
-
-> 顺带说明一处巧合:shellbase 的身份参数恰好叫 `window`,而 tmuxd 又刚好不做 tmux 的 window。
-> 两者毫无关系 —— 前者是**页面**,后者是 tmux 的窗口。tmuxd 对前者不解释,对后者不提供。
-
-### 2.2 规范化与派生
-
-规范化规则:
-
-- scheme 小写、path 去尾斜杠、`%` 编码归一;
-- **query 参数全部参与身份**,按键名排序后定序(这一层没有"非身份参数"了 ——
-  原先唯一的那个 `mode=ro` 随只读一起删掉了,见 §4)。
-
-派生会话名 = 可读 slug + URI 规范形的短哈希:
-
-```
-bash:///home/me                              →  bash-home-me-1a4f9c
-claude:///home/me/proj?window=main&block=1   →  claude-proj-7b21e0
-claude:///home/me/proj?window=main&block=2   →  claude-proj-c93d55   ← block 不同即另一个现场
-claude:///home/me/proj?window=review&block=1 →  claude-proj-0e77a2   ← window 不同亦然
-```
-
-slug 是给 `tmux ls` 的人看的,**哈希才是身份**。名字长度截到 40 字符以内
-(tmux 会话名不能含 `.` 和 `:`,slug 里一律换成 `-`)。
-
-派生名和用户显式起的名字撞车时:**报 `409 name_conflict`,不猜、不加后缀**。
-六位哈希撞车的概率可以忽略,真撞上了说明有人在手工起怪名字,该让他知道。
-
-state 里存的是**原始 URI 与派生名的对照**,所以这层映射随时可审计:
-
-```bash
-$ tmuxd ls --uri
-claude-proj-7b21e0   claude:///home/me/proj?window=main&block=1   alive  2 clients
-claude-proj-c93d55   claude:///home/me/proj?window=main&block=2   alive  0 clients
-```
-
-### 2.3 scheme 名即命令名
-
-URI 的 scheme 直接解释成"要跑的命令",path 是工作目录 —— 也是 shellbase 的约定,
-它足够好用而且**不需要注册表**:
-
-```
-bash:///home/me/proj      →  cd /home/me/proj && bash
-claude:///home/me/proj    →  cd /home/me/proj && claude
-vim:///home/me/notes.md   →  cd /home/me && vim notes.md     # path 是文件:cwd 取父目录,文件名作参数
-htop://                   →  cd $TMUXD_WORKSPACE && htop
-```
-
-- **path 是目录**:cwd = 该目录,命令无参启动;**path 是文件**:cwd = 父目录,文件名作第一个参数;
-- 创建前 `shutil.which(<scheme>)` 确认命令在 PATH 里,不在 → `400 cmd_not_found`;
-- `TMUXD_ALIASES` 可以给 scheme 起别名或钉死参数(`{"lg": "lazygit", "cc": "claude --resume"}`),
-  **但它是可选增强,不是准入门槛** —— PATH 里有的命令开箱即用;
-- **这不是新增权限**:能开 `bash://` 的人本来就能跑任意命令,scheme 只是把
-  "去哪个目录、跑哪个命令"编码进了定位符。tmuxd 的安全模型自始至终是"拿到 token 即拥有这台机器的 shell"。
-
-用名字创建的会话走另一条路,参数显式给:
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 会话身份。调用方给;不给则 tmuxd 生成一个(像 tmux 的 `0` / `1` / `2`) |
+| `cwd` | 启动目录。省略取 `TMUXD_WORKSPACE` |
+| `cmd` | 启动命令。省略跑 `$TMUXD_SHELL` |
 
 ```jsonc
 POST /api/sessions
-{ "name": "work", "cwd": "/home/me/proj", "cmd": "npm run dev" }   // cmd 省略则跑 $TMUXD_SHELL
+{ "id": "work", "cwd": "/home/me/proj", "cmd": "npm run dev" }
 ```
 
-两条路最后落到同一个 `tmux new-session -d -s <name> -c <cwd> [cmd]`。
+落到 `tmux new-session -d -s <id> -c <cwd> [cmd]`,一句话的事。**没有第四个字段。**
+
+`id` 直接当 tmux 会话名用,所以受 tmux 的约束:不能含 `.` 和 `:`,不能为空。
+不合法就 `400 bad_id` —— **不静默改写**,因为调用方得能凭同一个字符串再找回来,
+被悄悄改过的 id 是找不回来的。
+
+tmuxd **不校验 `cmd` 存不存在**。命令不在 PATH 里,tmux 照样把会话建起来然后立刻退出,
+`ls` 里就是 `exited` —— 和你在终端里敲错命令的结果一样,不需要 tmuxd 额外发明一种错误。
+
+### 2.1 为什么 id 由调用方给
+
+因为**重入**:调用方需要"同一个东西,下次还能接回来"。
+
+而"同一个东西"是什么,只有调用方知道 —— 是页面上那个块、是这次 CI 的 job、
+是那个仓库目录。它能从自己的世界里算出一个稳定的字符串;tmuxd 生成的随机 id
+对它毫无意义,它还得再存一张对照表,而那张表一旦和现实漂移就全乱了。
+
+所以规则很简单:**你给 id,你负责它稳定;tmuxd 保证同一个 id 永远指向同一个现场。**
+
+### 2.2 为什么不做 URI 寻址
+
+早先的稿子把 shellbase 的那套 URI 身份搬了下来 ——
+`claude:///home/me/proj?window=main&block=2`,外加"scheme 名即命令名"、
+规范化规则、身份参数、别名注册表。**全部删掉了。**
+
+那是 shellbase 的**布局协议**,不是终端服务的事。塞进这一层的代价是它要同时背上四样东西
+(URI 规范化、身份参数语义、scheme → 命令的映射、别名表),而这四样**只服务一个调用方**。
+一个下层为了一个上层的方言长出四个概念,是这类分层最典型的烂掉方式。
+
+现在的分工干净得多:
+
+```
+shellbase:  claude:///home/me/proj?window=main&block=2
+                        │  自己规范化、自己派生(它本来就有这套逻辑)
+                        ▼
+tmuxd:      id = "main--claude-proj-2"   cwd = "/home/me/proj"   cmd = "claude"
+```
+
+**shellbase 把 URI 算成一个 id,tmuxd 只认 id。** 映射规则留在懂它的那一层。
+
+shellbase 的重入语义一个字都不用改 —— 它的确定性映射照跑,只是产物从"内部 tmux 会话名"
+变成"tmuxd 的 id",而 tmuxd 根本不需要知道这个字符串是怎么算出来的。
+`block=2` 意味着什么、`window` 是页面还是窗口,这些问题在这一层**不存在**。
+
+顺带少掉的东西:`TMUXD_ALIASES`、`uri.py`、`name_conflict` 和 `cmd_not_found` 两个错误码、
+以及"scheme 是不是合法命令"这类裁决。**一层不该替另一层解释它的方言。**
 
 ## 3. attach:无中生有 + 302
 
 ```
 调用方                      tmuxd                                ttyd            tmux
-  │ GET /api/attach?target=work                                   │               │
-  │─────────────────────────▶│ 解析 target → 会话名               │               │
-  │                          │ tmux has-session?                  │               │
+  │ GET /api/attach?id=work&cwd=/home/me/proj&cmd=claude          │               │
+  │─────────────────────────▶│ tmux has-session -t "=work"?       │               │
   │                          │  ├─ 有 → 更新 last_attached         │               │
   │                          │  └─ 无 → new-session -d + 写 state  │──────────────▶│
   │◀── 302 /tty/?arg=work ───│                                     │               │
@@ -154,10 +123,15 @@ POST /api/sessions
 
 | 参数 | 说明 |
 | --- | --- |
-| `target` | 会话名或 URI(§2)。必填 |
+| `id` | 会话 id(§2)。必填 |
+| `cwd` / `cmd` | **只在需要创建时用**;已存在则忽略 |
 | `create` | `false` = 关掉无中生有,不存在就 `404 no_such_session` |
 
-**只有两个参数。** 没有 `mode` —— attach 一律是完整的读写 attach,理由见 §4。
+`cwd` / `cmd` 放在 attach 上,是为了让 iframe 类调用方**一次请求就能落位**:
+把 `src` 指过来,有则接上、无则按这个目录和命令建 —— 不用先 `POST /api/sessions`
+再跳一次。已存在的会话不会因为参数不同而被重建,**id 说了算**。
+
+没有 `mode` 参数 —— attach 一律是完整的读写 attach,理由见 §4。
 
 前端(不管是 tmuxd 自带的薄壳页,还是 shellbase 那样的 iframe 调用方)**永远把 iframe 的
 src 指向 attach 端点,不直接指向 `/tty/`**。浏览器对 iframe 内的 302 会自动跟随,
@@ -215,7 +189,7 @@ tmuxd 只有一个 token,它的安全模型自始至终是一句话 ——
 | 上层 | 怎么锁 |
 | --- | --- |
 | **shellbase 这类平台** | 它有自己的用户体系和 window 粒度的分享;它决定给谁渲染一个能敲字的 iframe,给谁渲染一个禁掉输入的 |
-| **反代 / 网关** | 按路径和方法放行:只放 `GET /api/sessions/*/capture` 和 `WS /stream`,不放 `POST /keys` —— 这才是货真价实的只读,而且是在有身份的地方判的 |
+| **反代 / 网关** | 按路径和方法放行:放 `GET /api/sessions`、不放 `POST /keys`,再按需决定要不要放 `/s/<name>/` 那个能敲字的网页 —— 这是在有身份的地方判的,才作数 |
 | **你自己的编排程序** | 它本来就持有全部能力,爱怎么分发就怎么分发 |
 
 **tmuxd 给上层的是完整能力,不是残缺能力。** 上层拿完整的,自己往下切;
@@ -285,7 +259,7 @@ state 说的(应然)和 `tmux ls` 里实际存在的(实然)会漂移,tmuxd 负�
 | 情况 | 处理 |
 | --- | --- |
 | **state 有、tmux 无** | 标 `status: exited`,**保留记录**。调用方可能还引用着它,凭 cwd/cmd 能重建 |
-| **tmux 有、state 无** | 标 `kind: external`,**不杀、不收编**,并记一条 warning 日志 |
+| **tmux 有、state 无** | 标 `external: true`,**不杀、不收编**,并记一条 warning 日志 |
 | **两边都有** | 正常,顺带刷新 `clients`、`current_command` 等实时字段 |
 
 **正常情况下 `external` 一条都不该有。** 会话池是 tmuxd 专属的
@@ -295,9 +269,9 @@ state 说的(应然)和 `tmux ls` 里实际存在的(实然)会漂移,tmuxd 负�
 
 所以它是**漂移,不是场景**。tmuxd 的处理是"看见、说出来、但不动手":
 
-- **列出来**,标 `kind: external`,`ls` 里显眼;日志里记一条 warning,附一句
+- **列出来**,标 `external: true`,`ls` 里显眼;日志里记一条 warning,附一句
   "这个会话不是 tmuxd 开的,它不参与重建";
-- **能 attach / capture / keys / kill** —— 既然它就在那儿,残废地对待它没有好处;
+- **能 attach / send / kill** —— 既然它就在那儿,残废地对待它没有好处;
 - **绝不杀、绝不收编** —— 不给它补一份 state 假装是自己开的,那会把一个可见的异常
   变成一个看不见的谎。
 
@@ -315,28 +289,26 @@ state 说的(应然)和 `tmux ls` 里实际存在的(实然)会漂移,tmuxd 负�
 
 ```jsonc
 { "sessions": [
-  { "name": "claude-proj-7b21e0",
-    "uri": "claude:///home/me/proj?window=main&block=1",
-    "kind": "uri",                    // named | uri | external
-    "status": "alive",                // alive | exited
+  { "id": "main--claude-proj-2",     // 调用方给的,tmuxd 不解释它怎么来的(§2.2)
     "cwd": "/home/me/proj",
     "cmd": "claude",
-    "cols": 120, "rows": 40,
+    "status": "alive",                // alive | exited
     "clients": 2,                     // 当前 attach 的客户端数
     "current_command": "claude",      // #{pane_current_command},终端里跑的是什么
     "created_at": "2026-08-08T09:00:00Z",
     "last_attached": "2026-08-08T10:30:00Z",
-    "attach_url": "/s/claude-proj-7b21e0/" },
+    "attach_url": "/s/main--claude-proj-2/" },
 
-  { "name": "hotfix", "kind": "external", "status": "alive",
-    "cols": 80, "rows": 24, "clients": 1, "current_command": "vim",
-    "warning": "not created by tmuxd",   // ← 有人绕过 tmuxd 直接开的,§7
-    "attach_url": "/s/hotfix/" }
+  { "id": "hotfix", "status": "alive",
+    "external": true,                 // ← 有人绕过 tmuxd 直接开的,§7
+    "clients": 1, "current_command": "vim",
+    "attach_url": "/s/hotfix/" }      // ← 没有 cwd/cmd 记录,其余照常
 ] }
 ```
 
-**没有 `windows` 计数,没有 pane 列表** —— 不做的东西不出现在响应里(§1)。
+**没有 `windows` 计数,没有 pane 列表,没有 `uri`** —— 不做的东西不出现在响应里
+(§1、§2.2)。字段少到可以背下来:id、cwd、cmd,加上探出来的几个实时字段。
 
-`clients`、`current_command`、`cols/rows` 是**现场探的**,不是 state 里读的。
+`clients`、`current_command`、`status` 是**现场探的**,不是 state 里读的。
 `current_command` 尤其有用:它是"这个会话现在在干嘛"最便宜的答案,
-也是 [03 §4](03-io.md) 里 `run` 的守卫依据。
+`ls` 里显示它,一眼就知道这个会话是闲着的 shell 还是正跑着 Agent。
