@@ -171,9 +171,22 @@ tmuxd/data/ttyd/
 > 而不少发行版的 aarch64 版本已经关掉了 32 位支持。所以这些机器会落到"报错 + 自己装"。
 > 要覆盖它们,把上游的 `ttyd.aarch64` 放进这个目录就行 —— **查找机制一行都不用改。**
 
-**只在 Linux 上生效。** 上游的静态二进制是 musl 构建的 ELF,macOS / BSD 跑不了 ——
-那些平台上第三级直接跳过,报错里给 `brew install ttyd`。这一点必须写明白,
-不能让 macOS 用户以为"包里带了所以应该能用"。
+**只在 Linux 上生效。** 这不是保守,是上游的资产列表决定的 ——
+1.7.7 那一版全部产物如下:
+
+```
+ttyd.x86_64  ttyd.i686  ttyd.aarch64  ttyd.arm  ttyd.armhf
+ttyd.mips  ttyd.mipsel  ttyd.mips64  ttyd.mips64el  ttyd.s390x
+ttyd.win32.exe
+```
+
+前十个是 **musl 静态 ELF**(Linux),最后一个是 Windows。
+**一个 macOS 资产都没有** —— macOS 要的是 Mach-O,上游不出。
+
+所以 macOS / BSD 上第三级**直接跳过**,报错里给 `brew install ttyd`。
+这一点必须写明白,不能让 macOS 用户以为"包里带了所以应该能用"。
+自己给 macOS 编一份不在考虑范围内(§7):那等于接手一条构建流水线,
+而 Homebrew 已经有 ttyd 的 formula,一条命令的事。
 
 > 要不要补 `ttyd.aarch64` / `ttyd.i686` / `ttyd.mips`,取决于面向什么机群。
 > 每多一个约 +1.2MB,而查找机制不用改一行 —— **加架构就是往目录里多放一个文件。**

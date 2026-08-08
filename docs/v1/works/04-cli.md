@@ -73,13 +73,16 @@ tmuxd kill-server --tmux      # 真的要杀 tmuxd 的 tmux server(它的会话�
 ## 3. 会话
 
 ```bash
-tmuxd new  [-s ID] [-c DIR] [-e K=V]... [-- CMD...]
+tmuxd new  [-t ID] [-c DIR] [-e K=V]... [-- CMD...]
 tmuxd ls   [-F FORMAT]
 tmuxd url    -t ID [-o]          # 打印入口 URL;-o = 顺手用默认浏览器打开
 tmuxd kill   -t ID
 tmuxd rename -t ID NEW
 tmuxd has    -t ID
 ```
+
+**每条命名会话的命令都是同一对参数:`-t` / `--id`。** 为什么不是 tmux 的
+`-s` / `-t` 两套,见 §3.1。
 
 ```console
 $ tmuxd new -s work -c ~/proj
@@ -105,11 +108,54 @@ $ tmuxd url -t work -o          # 打开浏览器
   而那等于把这批会话全部交出去,理由见 [02 §4.3](02-session.md);
 - **detach 不需要命令** —— 关掉网页就是 detach,会话照跑;
 - `has` 只返回退出码,给脚本用:`tmuxd has -t work || tmuxd new -s work`;
-- `-s` 不给则生成一个 id(像 tmux 的 `0` / `1` / `2`);**要重入就自己给**
+- `-t` 不给则生成一个 id(像 tmux 的 `0` / `1` / `2`);**要重入就自己给**
   ([02 §2.1](02-session.md));
 - **`ls` 里没有 window / pane 计数** —— 一个会话就是一个终端([02 §1](02-session.md));
 - `-F` 用 tmux 同款占位符:`#{session_id}` `#{session_attached}`
-  `#{pane_current_command}` `#{session_status}`。
+  `#{pane_current_command}` `#{session_status}`。`#{session_name}` 是
+  `#{session_id}` 的别名,保留但不是规范写法(§3.1)。
+
+### 3.1 一个东西只该有一个名字
+
+> **待落地的改动。** 决定已经定了,代码还是 1.0.0 的样子
+> (`new -s` / 其余 `-t/--target`)。清单见 §10。
+
+同一个字符串,在三层里曾经有四个名字:
+
+| 层 | 叫法 |
+| --- | --- |
+| 库 | `t.session(id=…)`、`t.get(id)`、`s.id` |
+| HTTP | `POST {"id": …}`、`/api/sessions/{id}` |
+| CLI(1.0.0) | `new -s ID`,**其余** `-t ID` |
+| `-F` | `#{session_id}` 和 `#{session_name}` 两个都认 |
+
+这违反了这一层最该守的那条性质:**出问题时可以把任意一层翻译成另一层**
+([03 §8](03-http.md))。而且不只是不整齐,有两处是实际会误导人的:
+
+**① `-t` 在 tmux 里是 "target",而 target 是带语法的。** tmux 的 `-t` 收
+`session:window.pane`,tmuxd **明确把这套语法删掉了**([03 §3](03-http.md))——
+`-t/--target` 于是在替一个不存在的概念占着名字,让人以为可以写 `work:1`。
+**这是照抄 tmux 唯一一处抄出错误预期的地方。**
+
+**② `new -s` 和其余 `-t` 的区分在这里没有意义。** tmux 里它是有道理的:
+`new-session -s` 是给一个新东西起名,别的命令 `-t` 是指认一个已有的。
+但 tmuxd 的 `new` 是**有则接上、无则创建** —— 它完全可能正在指认一个已存在的会话。
+所以"起名"和"指认"在这一层是同一件事,**同一个值不该因为动词不同就换个参数名**。
+
+定下来的写法:
+
+```
+-t, --id ID        每条命名会话的命令都用这一对
+```
+
+- **`-t` 这个字母保留** —— tmux 用户的手指是这么长的,这是 §1 明确要守的手感;
+- **长名改成 `--id`** —— 它和库、和 HTTP、和 `#{session_id}` 对上了。
+  字母承载习惯,名字承载事实;
+- **`-s` / `--session` / `--target` 全部保留为别名**,不打印在 `--help` 里。
+  1.0.0 已经发到 PyPI 了,`tmuxd new -s work` 必须继续能跑。
+
+顺带一条纪律:**新增参数以库里的名字为准。** 和 tmux 撞了就借它的短字母,
+但长名跟着库走 —— 反过来会让"翻译成另一层"这件事一点点烂掉。
 
 ## 4. 往里敲
 
@@ -197,6 +243,8 @@ set -g open-cmd      "firefox %u"     # %u = 会话 URL,给 tmuxd url -o 用
 | window / pane 命令 | 一大堆 | **一条都没有** | 一个会话就是一个终端([02 §1](02-session.md)) |
 | 前缀键 `C-b` | 有 | **无** | CLI 不劫持键盘;要前缀键就进网页用 tmux 本体 |
 | 会话名前缀匹配 | 支持 | **精确匹配**(`-t "=id"`) | `work` 匹配上 `workbench` 是真实事故 |
+| `-t` 是 target(带 `session:window.pane` 语法) | 是 | **`-t/--id`,只收一个 id** | 那套语法这一层没有,`--target` 会让人以为有(§3.1) |
+| `new -s` / 其余 `-t` 两套 | 是 | **统一 `-t/--id`** | `new` 是有则接上,"起名"和"指认"在这里是同一件事(§3.1) |
 | `-L` | 换 tmux server | 换 **tmuxd 实例**(连带换它的 tmux socket) | 实例是一个概念,不是两个 |
 
 ## 8. 退出码
@@ -224,7 +272,7 @@ CLI 不做任何库没有的事,每条命令就是一次调用:
 | `serve` / `start` | 构造 `Tmuxd(...)` 并不让进程退出 |
 | `stop` | 结束那个进程(ttyd 跟着走,会话不动) |
 | `info` | `t.info()` |
-| `new` | `t.session(id, cwd, cmd, env)` |
+| `new -t ID` | `t.session(id, cwd, cmd, env)` |
 | `ls` | `t.sessions()` |
 | `url` | `s.url` |
 | `kill` | `s.kill()` |
@@ -236,3 +284,17 @@ CLI 不做任何库没有的事,每条命令就是一次调用:
 **十一条命令,十一个库调用,一一对应。** 唯一多出来的东西是输出格式化和退出码映射,
 两样都在壳里做,不进库 —— 连 id 解析都没有,它就是原样传过去的字符串。
 `--json` 在 `ls` / `info` 上可用,输出就是库对象序列化后的样子,和 HTTP 那层完全一致。
+
+## 10. 待落地:参数改名(§3.1)
+
+代码还是 1.0.0 的样子,以下是要改的地方:
+
+| 改哪 | 改什么 |
+| --- | --- |
+| `tmuxd/cli.py` | 每条命名会话的命令加 `-t/--id`,`dest="id"`;`-s`/`--session`/`--target` 转为 `help=SUPPRESS` 的别名 |
+| `tmuxd/cli.py` | `args.target` / `args.session` 的读取点改成 `args.id` |
+| `docs/v1/cli/*.md` | 参数表与示例改成 `-t/--id`,并注明旧写法仍可用 |
+| `tests/cli_shell/` | 补两条:`--id` 与 `-s` 走同一条路;`--help` 里不出现别名 |
+
+**别名不设移除期限。** 一个已经发出去的参数名,留着的成本是一行 argparse,
+删掉的成本是别人的脚本 —— 不对等。
