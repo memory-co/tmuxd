@@ -17,6 +17,7 @@ pip install "tmuxd[server]"    # CLI 和 server 是一体的,装就一起装
 全套见 [server.md](server.md)。
 
 机器上要有 `tmux`(≥3.0);ttyd 不用自己装,包里自带。
+环境不齐(冷门架构、没装 tmux、想要更新的 ttyd)时,有一条可选的 [`tmuxd install`](install.md) —— **齐了就不用敲**。
 
 ## 五分钟
 
@@ -51,6 +52,7 @@ work                 alive   1 client   node     /home/me/proj
 | `has` | 存在就退出 0,给脚本用 | [sessions.md](sessions.md) |
 | `send` | 往里打**字面量文本** | [keys.md](keys.md) |
 | `keys` | 往里**按键**(`C-c`、`Enter`…) | [keys.md](keys.md) |
+| `install` | **可选**:把 tmux / ttyd 凑齐并记下来 | [install.md](install.md) |
 
 **每条命令就是一次库调用。** 没有任何命令能做库做不到的事。
 
@@ -138,6 +140,8 @@ set -g open-cmd      "firefox %u"     # %u = 会话 URL,给 tmuxd url -o 用
 ```
 
 **这八项就是全部会被读取的键** —— 写别的不会报错,但也不会生效。
+
+另有一个**机器写的** `~/.tmuxd.json`,只记两个二进制在哪,由 [`tmuxd install`](install.md) 维护 —— 和这个文件互不相干。
 配置项名字和 `Tmuxd(...)` 的构造参数一一对应([SDK 文档](../sdk/tmuxd.md#构造参数)),
 **配置文件只是构造参数的另一种写法**,不是第二套东西。
 

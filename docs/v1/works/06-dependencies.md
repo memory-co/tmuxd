@@ -130,6 +130,10 @@ tmuxd 一条都不占:它用的全是 stock tmux 的公开命令行,而 tmux 是
    TtydMissing,说清检测到什么架构、包里带了什么、怎么自己装
 ```
 
+> [07](07-install.md) 在 ① 和 ② 之间插了一级:`~/.tmuxd.json` 里 `tmuxd install`
+> 记下的那条路径。它排在 PATH 前面是因为**它也是显式的** —— 你跑过 `install`。
+> 但它每次都要复验,失效就**降级**回 ②,不报错(见 [07 §6](07-install.md))。
+
 ### 3.1 为什么 PATH 优先,自带兜底
 
 反过来(自带优先)能拿到版本一致性,但代价太大:
@@ -196,7 +200,7 @@ ttyd.win32.exe
 而 Homebrew 已经有 ttyd 的 formula,一条命令的事。
 
 > 要不要补 `ttyd.i686` / `ttyd.s390x` / `ttyd.mips`,取决于面向什么机群。
-> **加一个架构 = 清单里加一条**([`scripts/ttyd_assets.json`](../../../scripts/ttyd_assets.json)),
+> **加一个架构 = 清单里加一条**([`tmuxd/data/ttyd/assets.json`](../../../tmuxd/data/ttyd/assets.json)),
 > 查找那边加一行映射 —— 而且不影响别的 wheel 的体积(§5)。
 
 ### 3.4 可执行位:wheel 里保不住
@@ -291,7 +295,7 @@ bottle 平台: arm64_sequoia / arm64_sonoma / arm64_tahoe / sonoma / …
 打 tag 触发,发布走 **Trusted Publishing**(OIDC),仓库里不放任何 API token。
 
 **二进制不进 git。** 每次上游发版都会换,而 git 会永远留着旧的;
-值得版本化的是清单 [`scripts/ttyd_assets.json`](../../../scripts/ttyd_assets.json)
+值得版本化的是清单 [`tmuxd/data/ttyd/assets.json`](../../../tmuxd/data/ttyd/assets.json)
 —— 版本号、每个架构的 sha256、以及架构到 wheel tag 的映射。
 CI 按它下载并校验,本地想试就跑 `scripts/fetch_ttyd.py`。
 
@@ -327,8 +331,13 @@ CI 按它下载并校验,本地想试就跑 `scripts/fetch_ttyd.py`。
 
 - ❌ **打包 tmux 的二进制**(§2.1)
 - ❌ **内联 tmux 源码在安装时编译**(§2.2)
-- ❌ **运行时从网络下载 ttyd** —— "从互联网下载并执行一个二进制"的安全故事
-  比自带更差,还引入网络、校验和管理和一类新的安装期失败
+- ❌ **默认从网络下载 ttyd** —— 每次 `pip install` 都去网上拉一个二进制、而且那是
+  拿到它的唯一途径,这个安全故事比自带更差,还引入网络、校验和管理和一类新的安装期失败。
+
+  > **拒的是"默认路径",不是"下载"这件事。** [07](07-install.md) 加了一条
+  > `tmuxd install`:**你自己敲**才发生、**不是唯一途径**(自带的仍在,离线照跑)、
+  > 用上游 releases 的 `SHA256SUMS` **验过**、对不上就丢弃且没有 `--force`。
+  > 形状不同,所以结论也不同 —— 细节见 [07 §8](07-install.md)。
 - ❌ **自带优先于 PATH**(§3.1)
 - ❌ **自带 macOS 的 ttyd** —— 上游没有静态包,自己编就等于接手一条构建流水线;
   macOS 上 `brew install ttyd` 一条命令就有

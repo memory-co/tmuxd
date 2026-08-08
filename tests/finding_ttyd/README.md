@@ -21,7 +21,7 @@
 7. **自带的东西是有义务的**:LICENSE 必须随包(ttyd 是 MIT),
    SHA256 得和上游对得上 —— 谁分发谁负责。
 8. **清单是真相,二进制不进 git。** 每次上游发版二进制都会换,而 git 会永远留着旧的;
-   值得版本化的是 `scripts/ttyd_assets.json`(版本号 + 校验和 + 架构→wheel tag)。
+   值得版本化的是 `tmuxd/data/ttyd/assets.json`(版本号 + 校验和 + 架构→wheel tag)。
    所以用例验的是**清单自洽**(每个目标都有校验和、都映射到代码认得的架构、
    manylinux 与 musllinux 共用一份产物),树里恰好有二进制时再顺带验它对不对得上。
 
@@ -34,7 +34,7 @@
 
 ## fixture 来源
 
-- `scripts/ttyd_assets.json` —— 清单本身,发版和这些用例走的是同一份判据
+- `tmuxd/data/ttyd/assets.json` —— 清单本身,发版和这些用例走的是同一份判据
 - `tmp_path` / `monkeypatch`(pytest 内置)—— 造假的 PATH、假的 ttyd
 - `fake_ttyd()`(本场景内)—— 写一个会打印指定版本号的 shell 脚本冒充 ttyd,
   因为要测的是**版本判定和查找顺序**,不是 ttyd 本身

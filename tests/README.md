@@ -24,6 +24,7 @@ fixture 来源)和 `test.py`。相关的用例合并在一个场景下,跟「按
 | [`nothing_reads/`](nothing_reads/) | **守门测试:断言“没有”**。没有 capture / run / stream / 事件流 / rename / 远程客户端,库也不自己起 HTTP server;**`import tmuxd` 不把 FastAPI 拖进来**(零依赖全靠这条)。要加,先改 `works/03-server.md` 的论证再让这里红掉 |
 | [`control_api/`](control_api/) | **CLI 打的那个口不发明东西**:七个端点各对应一个库方法、`POST` 同样是有则接上、错误体是库异常的投影、`Idempotency-Key` 防重放(断言的是**屏幕上只出现一次**)、返回的 `url` 指向 ttyd 而不是管控口;外加“把 router 挂进别人的 app” |
 | [`cli_shell/`](cli_shell/) | **CLI 离不开 server**:没起时如实说(而且报的是管控口不是 ttyd 口)、`-s`/`--id` 五种写法同路、`--` 是标点不是命令的第一个词(这条曾经真写错过)、退出码是接口、`stop` 停门面不停屋子 |
+| [`installing/`](installing/) | **`tmuxd install` 与 `~/.tmuxd.json`**:**没有这个文件时行为不变**(它是辅助不是步骤)、json 里永远只有两个键(第三个键要报错 —— 库敢默认读它全靠这条)、记的路径失效要**降级并 warn 而不是抛**、校验和不符不留文件也没有 `--force`、1.7.4 及更早直接拒绝、非 root 不提权只打印命令 |
 
 ## 共享 fixture / helper(`conftest.py`)
 
@@ -33,6 +34,7 @@ fixture 来源)和 `test.py`。相关的用例合并在一个场景下,跟「按
 - `screen(t, sid)` —— 读屏幕。**库刻意不提供这个能力**,测试只好自己下到 tmux 那一层;
   这恰恰是那条设计线的注脚:测试是唯一真正需要读屏幕的调用方
 - `wait_for(t, sid, needle)` / `wait_until(pred)` —— 终端是异步的,断言前必须等
+- `isolated_toolchain_file`(autouse)—— 把 `TMUXD_JSON` 指到不存在的路径:这个文件的作用就是**改变查找结果**,开发机上真实的那份漏进来会让顺序类用例莫名其妙
 - `free_port()` / `pool_name(request)` / `kill_pool(name)` —— 挑端口 / 起名 / 收尾
 - `needs_tmux` / `needs_ttyd` —— 没装就跳过,不是失败
 

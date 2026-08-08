@@ -31,6 +31,18 @@ needs_ttyd = pytest.mark.skipif(not HAVE_TTYD, reason="ttyd not installed")
 TOKEN = "test-token"
 
 
+@pytest.fixture(autouse=True)
+def isolated_toolchain_file(tmp_path_factory, monkeypatch):
+    """没有 ``~/.tmuxd.json``,除非用例自己写一个。
+
+    这个文件的作用就是**改变二进制的查找结果**,所以跑测试的人机器上那份
+    要是漏进来,查找顺序的用例会莫名其妙地过或者不过。指到一个不存在的路径
+    上 —— 也正好顺手测了"没有这个文件时行为不变"这个默认情形。
+    """
+    monkeypatch.setenv(
+        "TMUXD_JSON", str(tmp_path_factory.mktemp("toolchain") / "absent.json"))
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

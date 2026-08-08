@@ -30,8 +30,7 @@ def fake_ttyd(path, version="1.7.7", exit_code=0):
 # 二进制不进 git(每次上游发版都会换,而 git 永远留着旧的),
 # 所以"真相"在清单里:版本号 + 校验和 + 架构到 wheel tag 的映射。
 ASSETS = json.loads(
-    (pathlib.Path(__file__).resolve().parents[2] / "scripts" / "ttyd_assets.json")
-    .read_text())
+    (pathlib.Path(T.BUNDLED_DIR) / "assets.json").read_text())
 
 
 def test_the_manifest_pins_a_version_and_a_checksum_for_every_target():

@@ -120,6 +120,12 @@ macOS 装的是 `py3-none-any` 那个 wheel —— 哪都装得上,只是要求 
 
 **不支持 Windows** —— tmux 没有 Windows 版,而 tmuxd 顶层 `import fcntl`。
 
+**环境不齐的话** —— 冷门架构、没装 tmux、或者想要比自带更新的 ttyd —— 有一条可选的
+[`tmuxd install`](docs/v1/cli/install.md):从上游下一份**验过校验和**的 ttyd
+(网络不通就退回包里自带的),tmux 则告诉你这台机器上确切该敲哪条命令;
+装完把两条路径记进 `~/.tmuxd.json`,下次库和 CLI 都自动读到。
+**环境齐的机器一次都不用敲它**,`Tmuxd()` 也不会检查你跑没跑过。
+
 tmuxd 永远不会接管你自己在用的那个 tmux:它在专属 socket 上开自己的池,
 所以 `tmux ls` 显示的还是原来那些。
 
@@ -128,7 +134,7 @@ tmuxd 永远不会接管你自己在用的那个 tmux:它在专属 socket 上开
 | | |
 | --- | --- |
 | [`docs/v1/sdk`](docs/v1/sdk/) | **Python SDK** —— `Tmuxd`、会话、异常 |
-| [`docs/v1/cli`](docs/v1/cli/) | **命令行** —— 13 条命令、server、退出码、配置 |
+| [`docs/v1/cli`](docs/v1/cli/) | **命令行** —— 14 条命令、server、退出码、配置 |
 | [`docs/v1/works`](docs/v1/works/) | **设计稿** —— 为什么减成这样 |
 | [`CHANGELOG.md`](CHANGELOG.md) | **2.0 是破坏性版本** —— 改了什么、怎么迁 |
 
@@ -136,7 +142,7 @@ tmuxd 永远不会接管你自己在用的那个 tmux:它在专属 socket 上开
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 约 156 个用例,约 45 秒
+pytest                              # 约 198 个用例,约 50 秒
 pytest tests/exact_targeting -v     # 单个场景
 ```
 

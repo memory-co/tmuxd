@@ -132,7 +132,7 @@ def test_cli_commands_are_exactly_these():
 
     sub = [a for a in build_parser()._actions if getattr(a, "choices", None)][0]
     assert set(sub.choices) == {
-        "serve", "start", "stop", "status", "info",
+        "serve", "start", "stop", "status", "info", "install",
         "new", "ls", "url", "kill", "has", "send", "keys", "kill-server",
     }
 

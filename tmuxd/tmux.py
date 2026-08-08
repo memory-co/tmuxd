@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 
+from . import toolchain
 from .errors import TmuxGone, TmuxMissing
 
 # tmux prints one of these when the socket has no server behind it.
@@ -31,10 +32,44 @@ _NO_SERVER = ("no server running on", "error connecting to", "no such file or di
 MIN_VERSION = (3, 0)
 
 
-def find_binary(explicit=None):
-    path = explicit or os.environ.get("TMUXD_TMUX_BIN") or shutil.which("tmux")
+def is_usable(path):
+    """Runs, and new enough. Used to check a *recorded* path before trusting it."""
+    try:
+        proc = subprocess.run([path, "-V"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    raw = (proc.stdout or proc.stderr).strip()
+    return bool(raw) and _parse_version(raw) >= MIN_VERSION
+
+
+def find_binary(explicit=None, *, on_stale=None):
+    """Explicit, then ``~/.tmuxd.json``, then PATH (works/07 §6).
+
+    The recorded path is re-checked every time rather than trusted: it is a
+    cache of a past lookup, and the binary behind it can be deleted or moved
+    by an upgrade. A stale entry falls through to PATH -- a cache file must
+    not stop a machine that would otherwise work.
+    """
+    path = explicit or os.environ.get("TMUXD_TMUX_BIN")
+
     if not path:
-        raise TmuxMissing("tmux not found in PATH (set tmux_bin= or TMUXD_TMUX_BIN)")
+        recorded = toolchain.read().get("tmux")
+        if recorded:
+            if is_usable(recorded):
+                path = recorded
+            elif on_stale:
+                on_stale(recorded)
+
+    path = path or shutil.which("tmux")
+    if not path:
+        from .install import tmux_install_hint
+
+        raise TmuxMissing(
+            "tmux not found in PATH.\n"
+            "  install: %s\n"
+            "  or:      set tmux_bin= / TMUXD_TMUX_BIN\n"
+            "  tmux is required -- tmuxd is tmux + ttyd, and neither half is "
+            "optional." % tmux_install_hint())
     if not os.path.isabs(path):
         path = shutil.which(path) or path
     return path

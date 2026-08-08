@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -431,6 +432,91 @@ def cmd_keys(args):
     return EXIT_OK
 
 
+def cmd_install(args):
+    """Local on purpose, and never required.
+
+    It touches no server and constructs no ``Tmuxd`` -- it is the command you
+    run *because* those do not work yet. A ready machine never runs it
+    (works/07-install.md).
+    """
+    from . import install as I
+    from . import toolchain
+    from . import ttyd as T
+    from .tmux import MIN_VERSION as TMUX_MIN
+
+    marks = {"work": "· ", "warn": "⚠ ", "fail": "✗ ", "note": "  "}
+    current = [""]
+
+    def report(level, text):
+        # One stream, flushed: this is a running report, and progress arriving
+        # after the conclusion it explains is worse than no progress at all.
+        # (Same trap as the `serve` banner -- stdout block-buffers under a pipe.)
+        print("%-6s %s%s" % (current[0], marks.get(level, "  "), text), flush=True)
+
+    # -- tmux: detect; install only when already root; otherwise say the words
+    current[0] = "tmux"
+    named = bool(args.tmux_bin)
+    tmux_bin = args.tmux_bin or _tmux_lookup()
+    if not tmux_bin:
+        report("fail", "not found")
+    elif not I.tmux_is_usable(tmux_bin):
+        report("fail", "%s cannot run, or is older than %d.%d"
+               % (tmux_bin, *TMUX_MIN))
+        tmux_bin = None
+    # A binary you named by hand is never quietly replaced with another one --
+    # same rule as ttyd_bin= (works/06 §3).
+    if not tmux_bin and not named:
+        tmux_bin = I.install_tmux(report)
+    if tmux_bin:
+        print("tmux   ✓ %-12s %s" % (I.tmux_version(tmux_bin) or "?", tmux_bin),
+              flush=True)
+
+    # -- ttyd: network first, bundled second
+    current[0] = "ttyd"
+    if args.ttyd_bin:
+        ttyd_bin, how = args.ttyd_bin, "explicit"
+        if not T.is_usable(ttyd_bin):
+            report("fail", "%s cannot run, or is older than %d.%d"
+                   % (ttyd_bin, *T.MIN_VERSION))
+            ttyd_bin = None
+    else:
+        # Naming a version *is* asking for it -- letting the "already have
+        # one" shortcut swallow --ttyd-version would silently ignore the flag.
+        try:
+            ttyd_bin, how = I.install_ttyd(
+                version=args.ttyd_version,
+                refresh=args.refresh or bool(args.ttyd_version), report=report)
+        except I.Refused as exc:
+            # A refusal ends the command. Handing over a different build under
+            # a message about the network would be three lies at once.
+            report("fail", str(exc))
+            ttyd_bin, how = None, None
+    if ttyd_bin:
+        print("ttyd   ✓ %-12s %s%s" % (
+            T.version_of(ttyd_bin), ttyd_bin,
+            "" if how in ("recorded", "path") else "  (%s)" % how), flush=True)
+
+    # -- record it, so the next Tmuxd() finds it without looking
+    if not tmux_bin and not ttyd_bin:
+        return EXIT_FAIL
+    before = toolchain.read()
+    after = toolchain.write(tmux=tmux_bin, ttyd=ttyd_bin)
+    print(("写入   %s" % toolchain.path()) if after != before else "无需改动。",
+          flush=True)
+    return EXIT_OK if (tmux_bin and ttyd_bin) else EXIT_FAIL
+
+
+def _tmux_lookup():
+    """What ``Tmuxd()`` would resolve: the recorded one if it still works, else PATH."""
+    from . import install as I
+    from . import toolchain
+
+    recorded = toolchain.read().get("tmux")
+    if recorded and I.tmux_is_usable(recorded):
+        return recorded
+    return shutil.which("tmux")
+
+
 def cmd_kill_server(args):
     """Local on purpose: tearing the pool down has to work when the server is
     already down, which is exactly when you reach for it."""
@@ -595,6 +681,17 @@ def build_parser():
     add_id(keys)
     keys.add_argument("keys", nargs="+")
     keys.set_defaults(func=cmd_keys)
+
+    # Not a step in any quick start: a ready machine never runs this, and
+    # Tmuxd() does not check whether you have (works/07-install.md).
+    inst = sub.add_parser("install", help="get tmux and ttyd in place (only if they are not)")
+    inst.add_argument("--refresh", action="store_true",
+                      help="fetch ttyd again even if a usable one is already here")
+    inst.add_argument("--ttyd-version", metavar="X.Y.Z",
+                      help="a specific upstream ttyd (>= 1.7.5, the first with checksums)")
+    inst.add_argument("--tmux-bin", metavar="PATH", help="record this tmux instead of looking")
+    inst.add_argument("--ttyd-bin", metavar="PATH", help="record this ttyd instead of fetching")
+    inst.set_defaults(func=cmd_install)
 
     ks = sub.add_parser("kill-server", help="destroy every session in this pool")
     ks.add_argument("--tmux", action="store_true", help="required confirmation")

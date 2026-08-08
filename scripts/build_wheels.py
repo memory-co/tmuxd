@@ -43,7 +43,7 @@ import urllib.request
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-ASSETS = json.loads((ROOT / "scripts" / "ttyd_assets.json").read_text())
+ASSETS = json.loads((ROOT / "tmuxd" / "data" / "ttyd" / "assets.json").read_text())
 DATA = "tmuxd/data/ttyd"
 
 

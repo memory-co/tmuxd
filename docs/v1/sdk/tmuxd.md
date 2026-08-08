@@ -38,8 +38,8 @@ Tmuxd(port=7681, *, bind=None, token=None, socket=None, workspace=None,
 | `workspace` | 当前 cwd | `TMUXD_WORKSPACE` | 新会话不给 `cwd` 时用它 |
 | `shell` | tmux 的默认 | `TMUXD_SHELL` | 不给 `cmd` 时跑什么(写进 `default-shell`) |
 | `history_limit` | `10000` | `TMUXD_HISTORY_LIMIT` | 人在网页里能往回滚多远 |
-| `tmux_bin` | PATH 里的 `tmux` | `TMUXD_TMUX_BIN` | |
-| `ttyd_bin` | PATH → 包里自带的 | `TMUXD_TTYD_BIN` | 查找顺序见 [works/06 §3](../works/06-dependencies.md) |
+| `tmux_bin` | `~/.tmuxd.json` → PATH | `TMUXD_TMUX_BIN` | |
+| `ttyd_bin` | `~/.tmuxd.json` → PATH → 包里自带的 | `TMUXD_TTYD_BIN` | 顺序见 [works/06 §3](../works/06-dependencies.md)、[works/07 §6](../works/07-install.md) |
 | `state_dir` | `~/.tmuxd` | `TMUXD_STATE_DIR` | 实际用的是 `<state_dir>/<socket>/` |
 | `gc_ttl` | `604800`(7 天) | `TMUXD_GC_TTL` | `exited` 记录保留多少秒 |
 | `url_host` | 由 `bind` 推导 | `TMUXD_URL_HOST` | `s.url` 里的主机名。机器在 NAT / 反代后面时给它 |

@@ -132,6 +132,14 @@ packages, so re-shipping it would do badly what brew does well. macOS gets the
 **Windows is not supported** — tmux has no Windows build, and tmuxd imports
 `fcntl`.
 
+**If your machine is not ready** — an architecture no wheel covers, no tmux, or
+you want a newer ttyd than the one we vendored — there is an optional
+[`tmuxd install`](docs/v1/cli/install.md). It fetches a checksum-verified ttyd
+from upstream (falling back to the bundled one when the network is down) and
+tells you the exact command for tmux on this machine, then records both paths in
+`~/.tmuxd.json` so the library and the CLI find them next time. **A ready machine
+never runs it**, and `Tmuxd()` does not check whether you have.
+
 tmuxd never adopts the tmux you use yourself: it runs its own pool on a
 dedicated socket, so `tmux ls` shows exactly what it showed before.
 
@@ -140,7 +148,7 @@ dedicated socket, so `tmux ls` shows exactly what it showed before.
 | | |
 | --- | --- |
 | [`docs/v1/sdk`](docs/v1/sdk/) | **Python SDK** — `Tmuxd`, sessions, exceptions |
-| [`docs/v1/cli`](docs/v1/cli/) | **Command line** — 13 commands, the server, exit codes, config |
+| [`docs/v1/cli`](docs/v1/cli/) | **Command line** — 14 commands, the server, exit codes, config |
 | [`docs/v1/works`](docs/v1/works/) | **Design notes** — why it was cut down to this |
 | [`CHANGELOG.md`](CHANGELOG.md) | **2.0 is a breaking release** — what changed, and how to migrate |
 
@@ -148,7 +156,7 @@ dedicated socket, so `tmux ls` shows exactly what it showed before.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # ~156 tests, ~45s
+pytest                              # ~198 tests, ~50s
 pytest tests/exact_targeting -v     # a single scenario
 ```
 
