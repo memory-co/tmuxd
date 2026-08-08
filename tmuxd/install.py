@@ -21,7 +21,6 @@ to upstream is how you stop waiting for us.
 """
 
 import hashlib
-import json
 import os
 import platform
 import shutil
@@ -34,18 +33,7 @@ from . import toolchain
 from . import tmux as _tmux
 from . import ttyd as _ttyd
 
-ASSETS_PATH = os.path.join(_ttyd.BUNDLED_DIR, "assets.json")
-
-# Upstream started publishing SHA256SUMS with this release. Older ones cannot
-# be verified, so they are refused rather than downloaded on trust (07 §8.1).
-FIRST_VERSION_WITH_CHECKSUMS = (1, 7, 5)
-
 RELEASES = "https://github.com/tsl0922/ttyd/releases"
-
-
-def assets():
-    with open(ASSETS_PATH, encoding="utf-8") as fh:
-        return json.load(fh)
 
 
 # -- where things go -------------------------------------------------------
@@ -162,16 +150,11 @@ def install_tmux(report):
 
 
 class DownloadFailed(Exception):
-    """Network, 404, or a checksum that did not match. All fall back."""
+    """Anything that stopped us getting a binary from upstream.
 
-
-class Refused(DownloadFailed):
-    """We *could* have fetched it and chose not to. Never falls back.
-
-    Falling back here would hand over a different version than the one asked
-    for, under a message about the network -- when the network was fine and
-    the answer was policy. "I will not download something I cannot verify"
-    has to end the command, not quietly substitute something else.
+    There is only one class of failure because there is only one response to
+    it: fall back to the bundled build. No network, a 404, a checksum that
+    did not match, a file that will not run here -- all the same answer.
     """
 
 
@@ -195,33 +178,36 @@ def _fetch(url, timeout=120):
         raise DownloadFailed("%s (%s)" % (url, getattr(exc, "reason", exc)))
 
 
-def _version_tuple(text):
-    parts = []
-    for chunk in str(text).split("."):
-        digits = "".join(c for c in chunk if c.isdigit())
-        parts.append(int(digits) if digits else 0)
-    return tuple(parts + [0, 0])[:3]
+def latest_version():
+    """Whatever upstream calls latest right now.
 
+    Read from where ``/releases/latest`` redirects to, rather than the JSON
+    API -- same answer, no rate limit, no parsing.
 
-def expected_checksum(version, asset, manifest):
-    """From the manifest when it is the pinned version, else from upstream.
-
-    The manifest is stronger: it is in the repository, reviewed, and the
-    binary that shipped in the wheel was checked against it. Upstream's
-    ``SHA256SUMS`` is the fallback for a version the user asked for by name.
+    There is no way to ask for a specific version, on purpose. A version flag
+    means version comparison, a policy for releases too old to carry
+    checksums, and a story for "you asked for X and got Y" -- all of it to
+    serve a request nobody makes. You want a working ttyd; latest is that.
     """
-    if version == manifest["ttyd_version"]:
-        for target in manifest["targets"]:
-            if target["asset"] == asset:
-                return target["sha256"]
+    try:
+        with urllib.request.urlopen(RELEASES + "/latest", timeout=60) as resp:
+            landed = resp.geturl()
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise DownloadFailed("cannot reach %s (%s)"
+                             % (RELEASES, getattr(exc, "reason", exc)))
+    tag = landed.rstrip("/").rsplit("/", 1)[-1]
+    if not tag or tag == "latest":
+        raise DownloadFailed("cannot tell which ttyd release is latest (%s)" % landed)
+    return tag
 
-    if _version_tuple(version) < FIRST_VERSION_WITH_CHECKSUMS:
-        raise Refused(
-            "ttyd %s predates upstream's SHA256SUMS (first published in "
-            "%d.%d.%d), so the download cannot be verified -- refusing. "
-            "There is no option to download it unverified."
-            % ((version,) + FIRST_VERSION_WITH_CHECKSUMS))
 
+def expected_checksum(version, asset):
+    """From that release's own ``SHA256SUMS``.
+
+    Upstream has published these since 1.7.5, and latest is always past that,
+    so the "what if there is no checksum" branch cannot be reached -- which is
+    exactly what dropping version selection bought.
+    """
     sums = _fetch("%s/download/%s/SHA256SUMS" % (RELEASES, version)).decode(
         "utf-8", "replace")
     for line in sums.splitlines():
@@ -232,24 +218,24 @@ def expected_checksum(version, asset, manifest):
                          % (version, asset))
 
 
-def download_ttyd(version=None, report=lambda *a: None):
-    """Fetch, verify, install into ``bin_dir()``. Returns the path.
+def download_ttyd(report=lambda *a: None):
+    """Fetch the latest upstream build, verify it, install it. Returns the path.
 
-    Raises :class:`DownloadFailed` for anything -- no network, no such asset,
-    checksum mismatch. Every one of those is a fall-back-to-bundled, and a
-    mismatch is never installable: a check with a ``--force`` is not a check.
+    Raises :class:`DownloadFailed` for every kind of trouble, because the
+    caller does the same thing with all of them. A checksum mismatch discards
+    the file and there is no ``--force``: a check that can be skipped is not
+    a check.
     """
-    manifest = assets()
-    version = str(version or manifest["ttyd_version"])
+    version = latest_version()
     asset = asset_name()
-    want = expected_checksum(version, asset, manifest)
+    want = expected_checksum(version, asset)
 
     url = "%s/download/%s/%s" % (RELEASES, version, asset)
     report("work", "downloading %s" % url)
     blob = _fetch(url)
     got = hashlib.sha256(blob).hexdigest()
     if got != want:
-        raise Refused(
+        raise DownloadFailed(
             "checksum mismatch, discarded\n"
             "         expected %s\n         got      %s\n"
             "         this could be a hijacked download or a changed upstream "
@@ -267,8 +253,8 @@ def download_ttyd(version=None, report=lambda *a: None):
     if not _ttyd.is_usable(target):
         os.unlink(target)
         raise DownloadFailed(
-            "%s downloaded and verified, but will not run here (wrong "
-            "architecture?)" % asset)
+            "ttyd %s downloaded and verified, but will not run here (wrong "
+            "architecture, or too old)" % version)
     return target
 
 
@@ -289,8 +275,10 @@ def install_bundled(report):
     return target
 
 
-def install_ttyd(version=None, refresh=False, report=lambda *a: None):
-    """Network first, the bundled copy second (works/07 §3).
+def install_ttyd(refresh=False, report=lambda *a: None):
+    """Latest from upstream, then the bundled copy, then an error.
+
+    Three steps and no options -- that is the whole policy (works/07 §3).
 
     ``refresh`` skips the "already have one" shortcut. Note what counts as
     already having one: explicit, recorded, or on PATH -- **not** the bundled
@@ -306,11 +294,7 @@ def install_ttyd(version=None, refresh=False, report=lambda *a: None):
             return on_path, "path"
 
     try:
-        return download_ttyd(version, report), "download"
-    except Refused:
-        # Policy, not weather. Substituting another build here would answer a
-        # question the user did not ask.
-        raise
+        return download_ttyd(report), "download"
     except DownloadFailed as exc:
         report("warn", "download failed: %s" % exc)
 

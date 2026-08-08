@@ -480,17 +480,7 @@ def cmd_install(args):
                    % (ttyd_bin, *T.MIN_VERSION))
             ttyd_bin = None
     else:
-        # Naming a version *is* asking for it -- letting the "already have
-        # one" shortcut swallow --ttyd-version would silently ignore the flag.
-        try:
-            ttyd_bin, how = I.install_ttyd(
-                version=args.ttyd_version,
-                refresh=args.refresh or bool(args.ttyd_version), report=report)
-        except I.Refused as exc:
-            # A refusal ends the command. Handing over a different build under
-            # a message about the network would be three lies at once.
-            report("fail", str(exc))
-            ttyd_bin, how = None, None
+        ttyd_bin, how = I.install_ttyd(refresh=args.refresh, report=report)
     if ttyd_bin:
         print("ttyd   ✓ %-12s %s%s" % (
             T.version_of(ttyd_bin), ttyd_bin,
@@ -687,8 +677,6 @@ def build_parser():
     inst = sub.add_parser("install", help="get tmux and ttyd in place (only if they are not)")
     inst.add_argument("--refresh", action="store_true",
                       help="fetch ttyd again even if a usable one is already here")
-    inst.add_argument("--ttyd-version", metavar="X.Y.Z",
-                      help="a specific upstream ttyd (>= 1.7.5, the first with checksums)")
     inst.add_argument("--tmux-bin", metavar="PATH", help="record this tmux instead of looking")
     inst.add_argument("--ttyd-bin", metavar="PATH", help="record this ttyd instead of fetching")
     inst.set_defaults(func=cmd_install)

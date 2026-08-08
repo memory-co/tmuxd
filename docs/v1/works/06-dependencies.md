@@ -200,7 +200,7 @@ ttyd.win32.exe
 而 Homebrew 已经有 ttyd 的 formula,一条命令的事。
 
 > 要不要补 `ttyd.i686` / `ttyd.s390x` / `ttyd.mips`,取决于面向什么机群。
-> **加一个架构 = 清单里加一条**([`tmuxd/data/ttyd/assets.json`](../../../tmuxd/data/ttyd/assets.json)),
+> **加一个架构 = 清单里加一条**([`scripts/ttyd_assets.json`](../../../scripts/ttyd_assets.json)),
 > 查找那边加一行映射 —— 而且不影响别的 wheel 的体积(§5)。
 
 ### 3.4 可执行位:wheel 里保不住
@@ -295,7 +295,7 @@ bottle 平台: arm64_sequoia / arm64_sonoma / arm64_tahoe / sonoma / …
 打 tag 触发,发布走 **Trusted Publishing**(OIDC),仓库里不放任何 API token。
 
 **二进制不进 git。** 每次上游发版都会换,而 git 会永远留着旧的;
-值得版本化的是清单 [`tmuxd/data/ttyd/assets.json`](../../../tmuxd/data/ttyd/assets.json)
+值得版本化的是清单 [`scripts/ttyd_assets.json`](../../../scripts/ttyd_assets.json)
 —— 版本号、每个架构的 sha256、以及架构到 wheel tag 的映射。
 CI 按它下载并校验,本地想试就跑 `scripts/fetch_ttyd.py`。
 

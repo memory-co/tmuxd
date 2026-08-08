@@ -12,7 +12,7 @@
 | | tmux | ttyd |
 | --- | --- | --- |
 | 上游有预编译产物吗 | 没有,只有源码 | 有,静态 musl |
-| `install` 能做到 | **检测版本**;已经是 root 就代跑包管理器,否则把命令打给你 | **全自动**:下载 → 验校验和 → 落到 `~/.tmuxd/bin/ttyd` |
+| `install` 能做到 | **检测版本**;已经是 root 就代跑包管理器,否则把命令打给你 | **全自动**:下 latest → 验校验和 → 落到 `~/.tmuxd/bin/ttyd` |
 
 装完把两条路径记进 [`~/.tmuxd.json`](#tmuxdjson),**下次库和 CLI 都自动读到**。
 
@@ -38,9 +38,11 @@ ttyd   ✓ 1.7.7        /usr/local/bin/ttyd
 | 参数 | 干什么 |
 | --- | --- |
 | `--refresh` | 已经有能用的也重新下一份。**换新版本靠这个** |
-| `--ttyd-version X.Y.Z` | 指定上游版本(必须 ≥ 1.7.5,见[下面](#校验和)) |
 | `--tmux-bin PATH` | 不去找,就记这一个 |
 | `--ttyd-bin PATH` | 不去下,就记这一个(手动下载完用它收尾) |
+
+**没有指定版本的参数** —— 装的永远是上游 latest。要钉死某一个,自己下好之后
+`--ttyd-bin` 指过去,或者 `Tmuxd(ttyd_bin=…)`。
 
 退出码:两个都齐了 `0`,缺一个 `1`。
 
@@ -51,7 +53,7 @@ ttyd   ✓ 1.7.7        /usr/local/bin/ttyd
 > **自带的那份是"发 wheel 那天的 ttyd",网上的是"现在的 ttyd"。**
 
 自带的 Mbed TLS 是焊死的,`apt upgrade` 修不到,**只能等 tmuxd 发版**。
-所以顺序是**先网络,连不上再退回自带**,而且退回时一定会说出来:
+所以就三步,没有分支:**latest → 自带 → 报错**。退到自带时一定会说出来:
 
 ```console
 ttyd   ⚠ download failed: … (Connection refused)
@@ -63,21 +65,18 @@ ttyd     using the build bundled in the wheel; `tmuxd install --refresh` once th
 
 ## 校验和
 
-- **默认版本**:校验和来自仓库里的 [`tmuxd/data/ttyd/assets.json`](../../../tmuxd/data/ttyd/assets.json);
-- **`--ttyd-version` 别的版本**:从那个 release 拉 `SHA256SUMS` 再比;
-- **1.7.4 及更早**:上游那时还没发 `SHA256SUMS` —— **直接拒绝**,不提供"下了但不验"。
+先问上游 latest 是哪一版(读 `/releases/latest` 重定向到哪儿),
+再拉**那一版自己的 `SHA256SUMS`** 比对。对不上就**丢弃**,而且没有 `--force` ——
+能被绕过的校验等于没有校验。
 
-对不上就**丢弃,不安装**,而且没有 `--force`。
-
-**注意它不会退回包里自带的那份。** 网络不通是天气,给你一个能用的是帮忙;
-校验和不符、版本太老不给验,这些是**决定** —— 这时候塞一个别的版本给你,
-等于同时谎报了版本、来源和原因。所以拒绝**直接终止命令**(退出码 1):
+丢弃之后仍然**退回包里自带的那份**:自带的是仓库里验过的,和网上这次出了什么事无关。
 
 ```console
-ttyd   ✗ checksum mismatch, discarded
+ttyd   ⚠ download failed: checksum mismatch, discarded
          expected 8a217c…
          got      3f91ab…
          this could be a hijacked download or a changed upstream asset -- it will not be installed.
+ttyd     using the build bundled in the wheel; `tmuxd install --refresh` to try upstream again
 ```
 
 ## tmux:不会替你 `sudo`

@@ -191,75 +191,45 @@ def stub_network(monkeypatch, payloads):
     monkeypatch.setattr(I.urllib.request, "urlopen", fake_urlopen)
 
 
+def latest(monkeypatch, version="1.7.7"):
+    monkeypatch.setattr(I, "latest_version", lambda: version)
+    return version
+
+
+def test_it_asks_upstream_what_latest_is(monkeypatch):
+    """从 /releases/latest 重定向到哪儿读版本号 —— 不用 JSON API,没有限流。"""
+    class Response:
+        def geturl(self):
+            return "https://github.com/tsl0922/ttyd/releases/tag/1.7.9"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(I.urllib.request, "urlopen", lambda url, timeout=None: Response())
+    assert I.latest_version() == "1.7.9"
+
+
+def test_the_checksum_comes_from_that_releases_own_sums(monkeypatch):
+    stub_network(monkeypatch, {
+        "SHA256SUMS": b"deadbeef  ttyd.x86_64\ncafebabe  ttyd.aarch64\n"})
+    assert I.expected_checksum("1.7.6", "ttyd.x86_64") == "deadbeef"
+
+
 def test_a_checksum_mismatch_installs_nothing(tmp_path, monkeypatch):
     """不给 --force。能被绕过的校验等于没有校验(works/07 §9)。"""
     monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
-    asset = I.asset_name()
-    stub_network(monkeypatch, {asset: b"not the real ttyd"})
+    latest(monkeypatch)
+    stub_network(monkeypatch, {
+        "SHA256SUMS": b"deadbeef  %s\n" % I.asset_name().encode(),
+        I.asset_name(): b"not the real ttyd"})
 
     with pytest.raises(I.DownloadFailed) as exc:
         I.download_ttyd()
     assert "checksum mismatch" in str(exc.value)
     assert not os.path.exists(os.path.join(I.bin_dir(), "ttyd")), "坏文件留在盘上了"
-
-
-def test_a_version_without_upstream_checksums_is_refused(tmp_path, monkeypatch):
-    """上游从 1.7.5 起才发 SHA256SUMS。验不了就不下,不提供"帮你下但验不了"。"""
-    called = []
-    monkeypatch.setattr(I, "_fetch", lambda *a, **k: called.append(a) or b"")
-
-    with pytest.raises(I.Refused) as exc:
-        I.expected_checksum("1.7.4", "ttyd.x86_64", I.assets())
-    assert "1.7.5" in str(exc.value)
-    assert not called, "都拒绝了还去连网"
-
-
-def test_a_refusal_does_not_fall_back_to_the_bundled_build(tmp_path, monkeypatch):
-    """拒绝是**决定**,不是网络问题。
-
-    退回自带的等于:用户点名要 1.7.4,我们给了 1.7.7,还配一句"网络不好" ——
-    三件事全是假的。所以拒绝必须终止这条命令。
-    """
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    monkeypatch.setenv("PATH", str(empty))
-    point_at(monkeypatch, tmp_path)
-    monkeypatch.setattr(I, "install_bundled",
-                        lambda report: pytest.fail("拒绝之后还去拿自带的"))
-
-    with pytest.raises(I.Refused):
-        I.install_ttyd(version="1.7.4")
-
-
-def test_a_checksum_mismatch_does_not_fall_back_either(tmp_path, monkeypatch):
-    """校验和不符可能是劫持。这时候悄悄换一个"能用的"是最糟的反应。"""
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    monkeypatch.setenv("PATH", str(empty))
-    monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
-    point_at(monkeypatch, tmp_path)
-    stub_network(monkeypatch, {I.asset_name(): b"not the real ttyd"})
-    monkeypatch.setattr(I, "install_bundled",
-                        lambda report: pytest.fail("校验失败之后还去拿自带的"))
-
-    with pytest.raises(I.Refused):
-        I.install_ttyd()
-
-
-def test_the_pinned_version_uses_the_manifest_not_the_network(tmp_path, monkeypatch):
-    """仓库里那份最强:它被 review 过,wheel 里的二进制也是照它验的。"""
-    manifest = I.assets()
-    monkeypatch.setattr(I, "_fetch", lambda *a, **k: pytest.fail("不该联网"))
-    target = manifest["targets"][0]
-
-    assert I.expected_checksum(manifest["ttyd_version"], target["asset"],
-                               manifest) == target["sha256"]
-
-
-def test_an_arbitrary_version_verifies_against_upstream_sums(monkeypatch):
-    stub_network(monkeypatch, {
-        "SHA256SUMS": b"deadbeef  ttyd.x86_64\ncafebabe  ttyd.aarch64\n"})
-    assert I.expected_checksum("1.7.6", "ttyd.x86_64", I.assets()) == "deadbeef"
 
 
 def test_download_falls_back_to_the_bundled_build(tmp_path, monkeypatch):
@@ -268,7 +238,7 @@ def test_download_falls_back_to_the_bundled_build(tmp_path, monkeypatch):
         pytest.skip("no bundled build for this platform")
     monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
     point_at(monkeypatch, tmp_path)
-    monkeypatch.setattr(I, "_fetch", lambda *a, **k: (_ for _ in ()).throw(
+    monkeypatch.setattr(I, "download_ttyd", lambda report: (_ for _ in ()).throw(
         I.DownloadFailed("connection refused")))
     monkeypatch.setattr(I.shutil, "which", lambda name: None)
 
@@ -278,6 +248,42 @@ def test_download_falls_back_to_the_bundled_build(tmp_path, monkeypatch):
     assert picked == os.path.join(I.bin_dir(), "ttyd")
     assert os.access(picked, os.X_OK)
     assert any(level == "warn" for level, _ in said), "降级了却没说一声"
+
+
+def test_every_kind_of_trouble_falls_back_the_same_way(tmp_path, monkeypatch):
+    """三步就是全部策略:latest → 自带 → 报错。
+
+    校验和不符、连不上、下回来跑不动 —— 处理方式必须一样,因为**能做的事只有一件**。
+    早先的稿子给"拒绝"单开了一条不兜底的路,那是为版本指定服务的;版本指定砍掉之后,
+    那条路只剩下复杂度。
+    """
+    if not T.bundled_binary():
+        pytest.skip("no bundled build for this platform")
+    monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
+    point_at(monkeypatch, tmp_path)
+    monkeypatch.setattr(I.shutil, "which", lambda name: None)
+    latest(monkeypatch)
+    stub_network(monkeypatch, {
+        "SHA256SUMS": b"deadbeef  %s\n" % I.asset_name().encode(),
+        I.asset_name(): b"not the real ttyd"})
+
+    picked, how = I.install_ttyd()
+    assert how == "bundled"
+    assert open(picked, "rb").read(4) != b"not ", "把没验过的东西装上了"
+
+
+def test_no_download_and_no_bundled_build_is_an_error(tmp_path, monkeypatch):
+    """最后一步:两条路都断了就报错,不装半个东西。"""
+    monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
+    point_at(monkeypatch, tmp_path)
+    monkeypatch.setattr(I.shutil, "which", lambda name: None)
+    monkeypatch.setattr(I, "download_ttyd", lambda report: (_ for _ in ()).throw(
+        I.DownloadFailed("connection refused")))
+    monkeypatch.setattr(I, "install_bundled", lambda report: None)
+
+    said = []
+    assert I.install_ttyd(report=lambda l, t: said.append((l, t))) == (None, None)
+    assert any(level == "fail" for level, _ in said)
 
 
 def test_an_already_usable_ttyd_is_left_alone(tmp_path, monkeypatch):
@@ -301,10 +307,10 @@ def test_refresh_downloads_anyway(tmp_path, monkeypatch):
     point_at(monkeypatch, tmp_path)
     tried = []
     monkeypatch.setattr(I, "download_ttyd",
-                        lambda version, report: tried.append(version) or "/x/ttyd")
+                        lambda report: tried.append(1) or "/x/ttyd")
 
     assert I.install_ttyd(refresh=True)[1] == "download"
-    assert tried == [None]
+    assert tried
 
 
 def test_the_bundled_copy_does_not_count_as_already_installed(tmp_path, monkeypatch):
@@ -315,7 +321,7 @@ def test_the_bundled_copy_does_not_count_as_already_installed(tmp_path, monkeypa
     point_at(monkeypatch, tmp_path)
     tried = []
     monkeypatch.setattr(I, "download_ttyd",
-                        lambda version, report: tried.append(version) or "/x/ttyd")
+                        lambda report: tried.append(1) or "/x/ttyd")
 
     I.install_ttyd()
     assert tried, "只有自带的时候没去联网"
@@ -323,14 +329,26 @@ def test_the_bundled_copy_does_not_count_as_already_installed(tmp_path, monkeypa
 
 def test_a_verified_download_lands_executable(tmp_path, monkeypatch):
     monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
+    latest(monkeypatch)
     blob = b"#!/bin/sh\necho \"ttyd version 1.7.7\"\n"
-    monkeypatch.setattr(I, "expected_checksum",
-                        lambda *a: hashlib.sha256(blob).hexdigest())
-    stub_network(monkeypatch, {I.asset_name(): blob})
+    digest = hashlib.sha256(blob).hexdigest().encode()
+    stub_network(monkeypatch, {
+        "SHA256SUMS": b"%s  %s\n" % (digest, I.asset_name().encode()),
+        I.asset_name(): blob})
 
     picked = I.download_ttyd()
     assert picked == os.path.join(I.bin_dir(), "ttyd")
     assert os.access(picked, os.X_OK)
+
+
+def test_there_is_no_way_to_ask_for_a_version(tmp_path):
+    """版本指定砍掉了 —— 它带来的每一条分支都是为一个没人提的需求服务的。"""
+    from tmuxd.cli import build_parser
+
+    sub = [a for a in build_parser()._actions if getattr(a, "choices", None)][0]
+    flags = {s for a in sub.choices["install"]._actions for s in a.option_strings}
+    assert "--ttyd-version" not in flags
+    assert not hasattr(I, "Refused"), "没有版本指定,就不需要「拒绝」这个概念了"
 
 
 # -- tmux:探测,不提权 -----------------------------------------------------

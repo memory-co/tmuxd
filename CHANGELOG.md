@@ -8,10 +8,11 @@
   没装 tmux、或者想要比包里自带更新的 ttyd。**环境齐的机器一次都不用敲它**,
   `Tmuxd()` 也不会检查你跑没跑过([文档](docs/v1/cli/install.md)、
   [设计](docs/v1/works/07-install.md));
-  - ttyd:**网络优先,包里自带兜底**。自带那份是"发 wheel 那天的 ttyd",
-    Mbed TLS 焊死在里面、只能等我们发版;走网络才拿得到上游的修复。
-    下载必验 `SHA256SUMS`,对不上就丢弃且**没有 `--force`**;
-    上游从 1.7.5 才发校验和,更早的版本**直接拒绝**而不是"下了但不验";
+  - ttyd:**三步,没有分支** —— **上游 latest → 包里自带 → 报错**。
+    自带那份是"发 wheel 那天的 ttyd",Mbed TLS 焊死在里面、只能等我们发版;
+    走网络才拿得到上游的修复。下载必验那一版自己的 `SHA256SUMS`,
+    对不上就丢弃(**没有 `--force`**)然后退回自带的。
+    **没有指定版本的参数** —— 要钉死某个版本就 `--ttyd-bin` / `Tmuxd(ttyd_bin=…)`;
   - tmux:上游只发源码,所以**只检测**。已经是 root(容器)就代跑包管理器,
     否则**只把那条命令打印出来** —— 一个 pip 装来的库不替你 `sudo`;
 - **`~/.tmuxd.json`** —— 机器写的文件,**只有 `tmux` 和 `ttyd` 两个键**,
@@ -24,8 +25,6 @@
 
 - ttyd / tmux 的查找顺序各插入一级:显式 → `~/.tmuxd.json` → PATH →(ttyd 才有的)包内自带;
 - `info()` 的 `tmux` 也带 `source` 了,`ttyd.source` 多一个取值 `config`;
-- ttyd 的清单从 `scripts/ttyd_assets.json` 挪到 **`tmuxd/data/ttyd/assets.json`** ——
-  `install` 在运行时要用它验校验和,而装好的包里没有 `scripts/`;
 - 找不到 tmux 的报错**带上这台机器该敲的那条安装命令**。
 
 ## 2.0.0
