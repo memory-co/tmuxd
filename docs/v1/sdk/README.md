@@ -5,8 +5,15 @@
 设计依据见 [`../works/01-library.md`](../works/01-library.md),这里是接口本身。
 
 ```bash
-pip install tmuxd          # 零运行时依赖;机器上要有 tmux(≥3.0),要网页入口还要 ttyd
+pip install tmuxd          # 零运行时依赖;机器上要有 tmux(≥3.0)
 ```
+
+ttyd 不用自己装 —— 包里自带,系统上有就优先用系统的
+([works/06](../works/06-dependencies.md))。
+
+> **走 SDK 这条链路不需要 server。** 你的进程本身就持有实例,ttyd 是你的子进程。
+> 要暴露给外面,把 tmuxd 挂进**你已经在跑的那个 Web 应用**就行([tmuxd.md](tmuxd.md))。
+> 需要一个独立 server 的是 CLI 那条链路 —— 见 [works/03 §1](../works/03-server.md)。
 
 ## 四行
 
@@ -36,7 +43,7 @@ from tmuxd import Tmuxd, Session, NoSuchSession, SessionExists, BadId, \
 
 **没有远程客户端。** 要驱动别的机器上的 tmuxd,用 `ssh box tmuxd …`,
 或者直接拿 `requests` 打那八个 HTTP 端点 —— 理由见
-[works/03-http.md §8](../works/03-http.md)。
+[works/03 §13](../works/03-server.md)。
 
 ## 三条你必须知道的性质
 
@@ -74,7 +81,7 @@ with Tmuxd(port=12345) as t:
 | 程序化拿一条命令的输出和退出码 | **`subprocess` / `ssh`** —— 那里有干净的 stdout 和真的退出码 |
 | 程序化往一个**有人在看**的会话里投喂 | `s.send()` ← 只有这件事别处办不了 |
 
-理由展开在 [works/03-http.md §2](../works/03-http.md)。
+理由展开在 [works/03-server.md §7](../works/03-server.md)。
 
 ## 一个完整的例子:Agent 宿主
 

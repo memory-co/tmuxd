@@ -9,13 +9,19 @@
 设计依据见 [`../works/04-cli.md`](../works/04-cli.md),这里是命令本身。
 
 ```bash
-pip install tmuxd          # 需要机器上有 tmux(≥3.0);要网页入口还需要 ttyd
+pip install "tmuxd[server]"    # CLI 和 server 是一体的,装就一起装
 ```
+
+**CLI 必须有一个 server 在跑** —— `tmuxd ls` 活几十毫秒就退出,持不住 ttyd 也持不住状态,
+只能去问一个持得住的东西。先 `tmuxd start`,再用别的命令。
+全套见 [server.md](server.md)。
+
+机器上要有 `tmux`(≥3.0);ttyd 不用自己装,包里自带。
 
 ## 五分钟
 
 ```console
-$ tmuxd start                        # 起服务:ttyd 守着,打印 URL 和 token
+$ tmuxd start                        # 先有 server:ttyd + 管控口都起来
 $ tmuxd new -t work -c ~/proj
 work  →  http://127.0.0.1:7681/?arg=work
 
@@ -33,10 +39,10 @@ work                 alive   1 client   node     /home/me/proj
 
 | 命令 | 干什么 | 详见 |
 | --- | --- | --- |
-| `serve` | 前台跑,守着 ttyd | [daemon.md](daemon.md) |
-| `start` / `stop` | 后台起 / 停。**停的是门面,会话全活** | [daemon.md](daemon.md) |
-| `status` | 回头核实 pid 和端口 | [daemon.md](daemon.md) |
-| `info` | 版本、ttyd、tmux、会话统计 | [daemon.md](daemon.md) |
+| `serve` | 前台跑 server(ttyd + 管控口) | [server.md](server.md) |
+| `start` / `stop` | 后台起 / 停。**停的是门面,会话全活** | [server.md](server.md) |
+| `status` | 回头核实 pid 和两个端口 | [server.md](server.md) |
+| `info` | 版本、两个端口、tmux、会话统计 | [daemon.md](daemon.md) |
 | `kill-server` | 销毁这个池里的全部会话 | [daemon.md](daemon.md) |
 | `new` | 建会话,或接上同 id 的那个 | [sessions.md](sessions.md) |
 | `ls` | 列会话 | [sessions.md](sessions.md) |
@@ -83,7 +89,8 @@ tmuxd new -s build -L ci                 # ❌ 不认
 | 选项 | 说明 |
 | --- | --- |
 | `-L, --socket NAME` | 实例名。**同时决定它的 tmux socket**(`-L ci` → `tmux -L tmuxd-ci`) |
-| `--port N` | ttyd 端口(入口地址用它) |
+| `--port N` | ttyd 端口(入口地址用它),默认 `7681` |
+| `--control-port N` | **管控口**,CLI 打这个,默认 `7682`([server.md](server.md)) |
 | `--bind ADDR` | ttyd 绑哪。非回环地址**必须**配 `--token`,否则拒绝启动 |
 | `--token T` | ttyd 的 basic auth 密码(用户名固定 `tmuxd`) |
 | `--state-dir DIR` | 状态目录,默认 `~/.tmuxd` |
@@ -159,4 +166,4 @@ set -g open-cmd      "firefox %u"     # %u = 会话 URL,给 tmuxd url -o 用
 | 开个会话,把入口发给别人 | `tmuxd new` + `tmuxd url` |
 
 第二行值得多看一眼:**tmuxd 不读终端内容**,所以没有 `capture` / `run` / `wait` / `stream`。
-要输出和退出码就用 ssh([为什么](../works/03-http.md))。
+要输出和退出码就用 ssh([为什么](../works/03-server.md))。

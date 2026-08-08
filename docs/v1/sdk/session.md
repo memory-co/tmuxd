@@ -242,4 +242,4 @@ external 会话多一个 `"external": true`,并且 `cwd` / `cmd` / `created_at` 
 | `split()` / window / pane | 多路复用是调用方的事:要几个终端开几个会话 | 多开会话 |
 
 完整论证见 [works/02 §6.1](../works/02-session.md) 与
-[works/03 §2](../works/03-http.md)。
+[works/03 §7](../works/03-server.md)。

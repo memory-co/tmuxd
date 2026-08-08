@@ -16,7 +16,7 @@ print(s.url)                              # http://localhost:12345/?arg=id5
 四行,一个终端就跑起来了,而且**浏览器打开那个 URL 就能进去**。
 
 这一层直接跑 `tmux` 命令 —— 不经过 HTTP,不经过任何自己的协议。
-CLI([04](04-cli.md))和可选的 HTTP 暴露([03](03-http.md))都是**套在这个库外面的壳**:
+CLI([04](04-cli.md))和可选的 HTTP 暴露([03](03-server.md))都是**套在这个库外面的壳**:
 
 ```
         ┌── 你的 Python 程序   import tmuxd        ← 最短的一条
@@ -44,7 +44,7 @@ tmuxd ──┼── CLI               tmuxd new / send    ← 同一个库,套
 │     ├── ttyd(子进程)  :12345  ← 人从这个端口进终端           │  │
 │     │      -p 12345 -a -W -c tmuxd:changeme attach.sh        │  │
 │     │                                                        │  │
-│     └── serve_http(port=12346)(可选,默认不起)              │  │
+│     └── (CLI 那条链路还会有个 server:管控口 :7682,见 03)   │  │
 │                                                              │  │
 └──────────────────────────────────────────────────────────────┘  │
                                                                   │
@@ -61,7 +61,7 @@ tmuxd 只是把 id 填进去。
 | 监听 | 谁的 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `:12345`(你给的 `port`) | **ttyd** | 起 | 人进终端的唯一入口 |
-| `:12346`(`serve_http` 给的) | tmuxd 的 HTTP | **不起** | 要暴露给外面才开([03](03-http.md)) |
+| `:7682` 管控口 | tmuxd 的 server | 只有 `tmuxd serve` 起 | **CLI 打这个**;嵌库那条链路不需要([03](03-server.md)) |
 | tmux socket | tmux | 懒起 | **tmuxd 专属**,和你自己的 tmux 不是同一个(§4) |
 
 **没有“不起 ttyd”这个选项。** `tmuxd = tmux + ttyd`,缺一个都不成立 ——
@@ -366,7 +366,7 @@ tmuxd/
 │   ├── ttyd.py               # 拉起 / 复用 / 绑生死(§3)
 │   ├── state.py              # 原子写、文件锁
 │   ├── errors.py             # 两个基类,HTTP 错误码是它们的投影
-│   ├── http.py               # 可选的 HTTP 壳(见 03),按需 import
+│   ├── server.py             # 可挂载的 router + `tmuxd serve`(见 03),按需 import
 │   ├── cli.py                # 命令行壳(见 04)
 │   └── data/                 # attach.sh + tmux.conf 模板,随包发出去
 └── tests/
@@ -376,6 +376,6 @@ tmuxd/
 
 - **`tmux.py` 是唯一拼 tmux 命令行的地方。** 不是洁癖:tmux 的 `-t` 目标语法(§9.1)、
   format 字符串、转义规则处处是坑,散在各处必然写歪;
-- **`import tmuxd` 不该拖进任何东西。** `http.py` 在用到时才 import,
-  而且**整个包零运行时依赖** —— HTTP 壳是标准库 `http.server` 写的。
-  七个端点、没有长连接,一个 Web 框架在这里帮不上忙,却会成为所有人的安装负担。
+- **`import tmuxd` 不该拖进任何东西。** `server.py` 在用到时才 import,
+  而 FastAPI / uvicorn 是 **`[server]` 这个可选 extra**([03 §6](03-server.md))——
+  基础安装保持零运行时依赖,因为**嵌库那条链路一行 Web 框架都用不上**。

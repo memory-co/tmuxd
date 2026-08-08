@@ -86,7 +86,7 @@ except PortInUse as exc:
 ```
 
 远端调用方拿 `code` 映射回自己那边的异常随意,但**那是调用方的事**:
-tmuxd 不自带 HTTP 客户端([works/03-http.md §8](../works/03-http.md))。
+tmuxd 不自带 HTTP 客户端([works/03 §13](../works/03-server.md))。
 
 ---
 

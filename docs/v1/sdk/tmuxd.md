@@ -117,26 +117,32 @@ t.info()["ttyd"]["owned"]     # 这个 ttyd 是不是我起的
 
 ---
 
-## `serve_http(port, *, bind=None, token=None) -> HttpShell`
+## 要暴露给外面?挂进你自己的应用
 
-把库暴露成 HTTP。**默认不开**,要暴露才调。
+**库不提供 `serve_http()`。** 嵌进来的人本来就有一个 HTTP 服务在跑 ——
+一个库不该在你的进程里偷偷起第二个 server:
 
 ```python
-shell = t.serve_http(12346, token="api-token")
-...
-shell.stop()
+from fastapi import FastAPI
+from tmuxd import Tmuxd
+from tmuxd.server import router          # 需要 pip install "tmuxd[server]"
+
+app = FastAPI()
+t = Tmuxd(port=12345, token="…")
+app.include_router(router(t), prefix="/tmuxd")
 ```
 
-在后台线程里跑,立刻返回。`bind` 不给就跟 `Tmuxd` 的一样。
-七个端点见 [works/03-http.md §4](../works/03-http.md)。
+这样鉴权、日志、CORS、限流全走**你自己那套**。七个端点见
+[works/03 §9](../works/03-server.md)。
 
-**两个端口,两拨用户**:`port` 是 ttyd,给**人**开浏览器;这个是 API,给**程序**。
+要一个**独立**的 server(CLI 就靠它),那是 `tmuxd serve`,
+见 [CLI · server](../cli/server.md)。
 
 ---
 
 ## `close()`
 
-**收掉这个实例起的东西:HTTP 壳,以及归自己管的那个 ttyd。**
+**收掉这个实例起的东西:归自己管的那个 ttyd。**
 
 - **不碰任何会话**;
 - 接手来的 ttyd(`owned=False`)不会被停掉 —— 那不是你的孩子。

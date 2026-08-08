@@ -1,6 +1,6 @@
 """nothing_reads — 守住"不读"这条线. See README.md.
 
-这里的用例断言的是**没有**。要加读能力,先改 works/03-http.md 的论证,
+这里的用例断言的是**没有**。要加读能力,先改 works/03-server.md 的论证,
 再让这里红掉 —— 顺序反过来就是在悄悄扩大这一层的职责。
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ READING = ["capture", "run", "stream", "wait_for", "resize", "split", "record",
 @pytest.mark.parametrize("name", READING)
 def test_session_has_no_read_method(name):
     assert not hasattr(Session, name), \
-        "Session.%s 出现了 —— 先去改 works/03-http.md 的论证" % name
+        "Session.%s 出现了 —— 先去改 works/03-server.md 的论证" % name
 
 
 @pytest.mark.parametrize("name", READING)

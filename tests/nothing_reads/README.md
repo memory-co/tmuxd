@@ -20,7 +20,7 @@ tmuxd **不提供任何读取终端内容的接口**:没有 `capture`、没有 `
 3. **CLI**:子命令表里没有 `capture` / `run` / `wait` / `stream` / `watch`。
 4. **`RemoteSession` 的接口和 `Session` 完全一致** —— 远程那头也不会多出读的能力。
 
-哪天真的要加,先改 `docs/v1/works/03-http.md` 的论证,再让这里的用例红掉 ——
+哪天真的要加,先改 `docs/v1/works/03-server.md` 的论证,再让这里的用例红掉 ——
 **顺序反过来就是在悄悄扩大这一层的职责**。
 
 ## 不在这测什么

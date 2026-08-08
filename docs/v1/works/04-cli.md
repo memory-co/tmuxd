@@ -1,10 +1,19 @@
 # 04 · CLI
 
-CLI 是**套在库外面的第三个壳**([01 §1](01-library.md))。它**永远直接
-`import tmuxd`**,和你自己写 Python 调的是同一份代码 —— 一次 HTTP 都不走。
+CLI 是**套在库外面的第三个壳**,但它和 SDK 那条链路有一处根本不同:
 
-要驱动别的机器上的 tmuxd,用 `ssh`:`ssh box tmuxd send -t work "…"`。
-理由见 §5。
+> **CLI 必须有一个 server 在跑。** `tmuxd ls` 是个活几十毫秒就退出的进程 ——
+> 它持不住 ttyd(ttyd 会跟着它死),也持不住会话状态。
+> 所以它只能**去问一个持得住的东西**,那就是 `tmuxd serve`([03 §1](03-server.md))。
+
+```bash
+pip install "tmuxd[server]"     # CLI 和 server 是一体的
+tmuxd start                     # 先有 server
+tmuxd new -t work               # CLI 才有东西可打
+```
+
+CLI 打的是**本机管控口**(默认 `127.0.0.1:7682`),和 ttyd 那个口分开(§5)。
+要驱动别的机器,用 `ssh box tmuxd …`,理由见 §5.1。
 
 **tmux 是参考,不是对齐目标。** 借它的短字母是因为顺手,不是因为要兼容它 ——
 tmuxd 的语法是 tmuxd 自己的,而它真正要对齐的是**同一个家族里的 webmuxd**(§3.1)。
@@ -20,7 +29,7 @@ tmuxd 的语法是 tmuxd 自己的,而它真正要对齐的是**同一个家族�
 | 场景 | 用什么 |
 | --- | --- |
 | 我 ssh 在那台机器上,想开个会话自己干活 | `tmux`(你自己的 socket,与 tmuxd 无关) |
-| 我要在远端机器上跑一条命令、拿输出和退出码 | **`ssh`** —— 不是 tmuxd([03 §2](03-http.md)) |
+| 我要在远端机器上跑一条命令、拿输出和退出码 | **`ssh`** —— 不是 tmuxd([03 §7](03-server.md)) |
 | 我要驱动**另一台机器上**的 tmuxd | **`ssh box tmuxd …`** —— 没有 `-H`,见 §5.1 |
 | 我要在一个**有人在看**的会话里投喂一条指令 | `tmuxd send` |
 | 我要开个会话,把入口发给别人 | `tmuxd new` + `tmuxd url` |
@@ -28,7 +37,7 @@ tmuxd 的语法是 tmuxd 自己的,而它真正要对齐的是**同一个家族�
 | 我在写 Python 调用方,想先手敲试试 | `tmuxd`(每条命令就是一次库调用,§9) |
 
 第二行要专门看一眼:**`tmuxd` 里没有"跑命令拿结果"这种事**。
-要那个就用 ssh,它本来就更直([03 §2](03-http.md))。
+要那个就用 ssh,它本来就更直([03 §7](03-server.md))。
 
 设计纪律:**借 tmux 的短字母,但语义和长名跟着 tmuxd 自己走。**
 凡是容易被 tmux 习惯带错预期的地方,在 §7 列出来。
@@ -74,7 +83,7 @@ tmuxd kill-server --tmux      # 真的要杀 tmuxd 的 tmux server(它的会话�
 起不来就把 `daemon.log` 的尾巴摆到眼前,而不是丢个 pid 让人自己找)。
 两条路跑的是同一份 `Tmuxd(...)`,只是外面包的壳不同。
 
-`--http-port` 才会把 HTTP 壳一起起来([03 §1](03-http.md)),默认没有。
+`--http-port` 才会把 HTTP 壳一起起来([03 §1](03-server.md)),默认没有。
 
 ## 3. 会话
 
@@ -142,11 +151,11 @@ $ tmuxd url -t work -o          # 打开浏览器
 | `-F` | `#{session_id}` 和 `#{session_name}` 两个都认 |
 
 这违反了两条:**家族里同一个概念该同一个名字**,以及这一层最该守的
-**出问题时可以把任意一层翻译成另一层**([03 §8](03-http.md))。
+**出问题时可以把任意一层翻译成另一层**([03 §13](03-server.md))。
 而且不只是不整齐,有两处是实际会误导人的:
 
 **① `--target` 在替一个不存在的概念占名字。** tmux 的 target 是带语法的
-(`session:window.pane`),而 tmuxd **没有那套语法**([03 §3](03-http.md))。
+(`session:window.pane`),而 tmuxd **没有那套语法**([02 §2](02-session.md))。
 叫 `--target` 会让人以为可以写 `work:1`。**借字母可以,借错概念不行。**
 
 **② `new -s` 和其余 `-t` 的区分在这里没有意义。** 这个区分是 tmux 的:
@@ -178,7 +187,7 @@ tmuxd keys -t ID C-c q Enter                # tmux 键名
 ```
 
 **就这两条。** 没有 `capture`、没有 `run`、没有 `wait`、没有 `stream`、没有 `watch` ——
-tmuxd 不读终端内容,理由见 [03 §2](03-http.md)。
+tmuxd 不读终端内容,理由见 [03 §7](03-server.md)。
 
 ```console
 $ tmuxd send -t work "npm test" --enter
@@ -193,7 +202,7 @@ $ tmuxd keys -t work C-c
 或者换 ssh。
 
 `send` 与 `keys` 分成两条命令,和库上的两个方法一一对应
-(`s.send()` / `s.send_key()`,[03 §5](03-http.md))——
+(`s.send()` / `s.send_key()`,[03 §10](03-server.md))——
 **`tmuxd send -t x "Enter the code"` 打进去的就是这七个词,不会变成一个回车。**
 这是 tmux 的 `send-keys` 最容易咬人的地方,壳这一层直接消掉。
 
@@ -226,7 +235,7 @@ ssh box tmuxd url -t work
   特殊报错(进程生命周期是对面的事)、退出码要多一档、错误要多两类 ——
   **一条只在少数人用、却让所有人多背一套分支的路径,不值得。**
 
-HTTP 壳([03](03-http.md))照旧存在,它是给**够不着 shell** 的调用方留的:
+HTTP 壳([03](03-server.md))照旧存在,它是给**够不着 shell** 的调用方留的:
 别的语言、别的容器、CI runner。有 ssh 的人本来就不需要它。
 
 ## 6. 配置
@@ -257,7 +266,7 @@ tmux 是参考,所以这张表不是"违规清单",而是**给带着 tmux 肌肉
 | `kill-server` | 杀 tmux server | **停 ttyd,会话全活** | 门面和屋子分开;要杀真的得 `--tmux` |
 | `attach` | 占住你的终端 | 改名 **`url`**,只打印地址 | 它本来就是给浏览器用的([02 §3](02-session.md)) |
 | `send-keys` | 一个命令,`-l` 区分 | 拆成 `send` / `keys` | 消掉"Enter 变回车"那个坑 |
-| `capture-pane` | 有 | **无** | 不读终端内容([03 §2](03-http.md)) |
+| `capture-pane` | 有 | **无** | 不读终端内容([03 §7](03-server.md)) |
 | `attach -r` 只读 | 有 | **无** | 这一层不分权限,锁在上层([02 §4](02-session.md)) |
 | window / pane 命令 | 一大堆 | **一条都没有** | 一个会话就是一个终端([02 §1](02-session.md)) |
 | 前缀键 `C-b` | 有 | **无** | CLI 不劫持键盘;要前缀键就进网页用 tmux 本体 |
@@ -280,7 +289,7 @@ tmux 是参考,所以这张表不是"违规清单",而是**给带着 tmux 肌肉
 | 5 | *保留* —— 曾是"连不上远端 tmuxd",`-H` 去掉后没有产出者(§5.1) |
 | 6 | tmux server 没了(`tmux_gone`) |
 
-4 可以改参数重试,**6 该告警**。和库的异常一一对应([03 §6](03-http.md))。
+4 可以改参数重试,**6 该告警**。和库的异常一一对应([03 §11](03-server.md))。
 
 **5 空着不复用。** 已经发出去的退出码含义不该改 —— 有人的脚本可能在判 5。
 

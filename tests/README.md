@@ -21,7 +21,7 @@ fixture 来源)和 `test.py`。相关的用例合并在一个场景下,跟「按
 | [`the_entrance/`](the_entrance/) | **人从哪进来**:URL 就是 ttyd 原生的 `?arg=`,算它不需要活着的 Python 进程;token 由 ttyd 把关;`?arg=` 是调用方可控的,所以 `attach.sh` 在 pty 创建点只 attach、从不创建 |
 | [`port_reuse/`](port_reuse/) | **端口上已经有 ttyd 了怎么办**:空着就起一个(归我管)、是自己人就接手(接手方 `close()` 不带走它)、是陌生人就 `PortInUse` 不猜不抢;外加"看得见门开着而不必自己开一个" |
 | [`your_tmux_untouched/`](your_tmux_untouched/) | **装一个服务不该动到你手里正在跑的东西**:专属 socket、`socket="default"` 直接报错、server 不存在时 `sessions()` 是 `[]` 而不是抛、`external` 只列不收编、**GC 只删 JSON 永远不 kill** |
-| [`nothing_reads/`](nothing_reads/) | **守门测试:断言"没有"**。三层壳都没有 capture / run / stream / 录制 / 事件流。要加读能力,先改 `works/03-http.md` 的论证,再让这里红掉 —— 顺序反过来就是在悄悄扩大职责 |
+| [`nothing_reads/`](nothing_reads/) | **守门测试:断言"没有"**。三层壳都没有 capture / run / stream / 录制 / 事件流。要加读能力,先改 `works/03-server.md` 的论证,再让这里红掉 —— 顺序反过来就是在悄悄扩大职责 |
 | [`http_shell/`](http_shell/) | **可选的那层壳不发明东西**:八个端点各对应一个库方法、`POST` 同样是有则接上、错误体是库异常的投影(`RemoteTmuxd` 能还原成同一个异常类)、`Idempotency-Key` 防重放(断言的是**屏幕上只出现一次**)、返回的 `url` 指向 ttyd 而不是 API 那个口 |
 | [`cli_shell/`](cli_shell/) | **壳本身**:`--` 是标点不是命令的第一个词(这条曾经真写错过)、退出码是接口、错误走 stderr、配置文件只是构造参数的另一种写法、`-H` 下拒绝生命周期命令 |
 

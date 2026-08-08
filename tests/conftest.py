@@ -2,7 +2,7 @@
 
 - ``instance`` (fixture) —— 一个 ``Tmuxd``,自己的 tmux socket 和状态目录,**不起 ttyd**
 - ``served`` (fixture) —— 同上,但真的在一个空闲端口上起 ttyd
-- ``screen(t, sid)`` —— 读屏幕。**只有测试能这么干**,库本身刻意不提供(works/03-http.md §2)
+- ``screen(t, sid)`` —— 读屏幕。**只有测试能这么干**,库本身刻意不提供(works/03-server.md §7)
 - ``wait_for(t, sid, needle)`` —— 等到屏幕上出现某段文字
 - ``free_port()`` / ``kill_pool(name)`` —— 挑端口 / 收尾时把整个池干掉
 

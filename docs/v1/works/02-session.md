@@ -60,7 +60,7 @@ s = t.session(id="work", cwd="/home/me/proj", cmd="npm run dev")
 
 落到 `tmux new-session -d -s <id> -c <cwd> [cmd]`,一句话的事。**没有第四个字段。**
 
-(HTTP 那层同形:`POST /api/sessions {"id","cwd","cmd"}`,见 [03 §4](03-http.md)。)
+(HTTP 那层同形:`POST /api/sessions {"id","cwd","cmd"}`,见 [03 §9](03-server.md)。)
 
 `id` 直接当 tmux 会话名用,所以受 tmux 的约束:不能含 `.` 和 `:`,不能为空。
 不合法就 `400 bad_id` —— **不静默改写**,因为调用方得能凭同一个字符串再找回来,
@@ -317,6 +317,6 @@ state 说的(应然)和 `tmux ls` 里实际存在的(实然)会漂移,tmuxd 负�
 —— 属性每次访问都问一次 tmux,不缓存([01 §6](01-library.md))。
 
 Session 上的方法只有三个:`send()`、`send_key()`、`kill()`,加一个 `url` 属性。
-**没有 `capture()`、没有 `run()`、没有 `stream()`** —— 这一层不读([03 §2](03-http.md))。
+**没有 `capture()`、没有 `run()`、没有 `stream()`** —— 这一层不读([03 §7](03-server.md))。
 `current_command` 尤其有用:它是"这个会话现在在干嘛"最便宜的答案,
 `ls` 里显示它,一眼就知道这个会话是闲着的 shell 还是正跑着 Agent。

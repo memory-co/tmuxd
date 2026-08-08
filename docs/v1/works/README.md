@@ -25,17 +25,21 @@ print(s.url)                              # http://localhost:12345/?arg=id5
 **不是"先有服务再配个 SDK",而是"先有库,需要的时候把它暴露出去"。**
 
 ```
-        ┌── 你的 Python 程序   import tmuxd        ← 最短的一条,大多数人到这里就够了
-        │
-tmuxd ──┼── CLI               tmuxd new / send    ← 同一个库,套了个命令行
- (库)   │
-        └── HTTP(可选)       POST /sessions/…    ← 同一个库,套了个 HTTP 口
-                                                     给别的语言、别的机器用
+① 嵌进你自己的进程            ② 命令行
+   import tmuxd                  tmuxd new / send / ls
+   实例在你手里                   每条命令都是新进程,什么都持不住
+   ▼                                  ▼
+   不需要 server                 **必须有 server**(tmuxd serve)
+   pip install tmuxd             pip install tmuxd[server]
 ```
 
-大多数调用方(编排程序、Web 后端、脚本)本来就和它在同一个进程里。
-让它们绕一圈 HTTP 去调自己进程里就能做的事,是白交的税 —— 所以 **HTTP 默认不开**
-([03 §1](03-http.md))。
+**这两条链路对 server 的需求正好相反。** 嵌进去的人自己的进程就活着,
+再起一个 HTTP 服务是白交税;而 CLI 的每条命令活几十毫秒就退出,
+**持不住 ttyd 也持不住状态,只能去问一个持得住的东西**。
+
+所以 server 不是"可选的暴露",而是 **CLI 这条链路的前提** ——
+而它的依赖(fastapi + uvicorn)**默认不装**,只落在选了 CLI 的人身上
+([03](03-server.md))。
 
 ## 会话模型小到一句话
 
@@ -59,7 +63,7 @@ tmuxd 只借 tmux 的一件事:让 shell 活得比连接久、能被多人同时
 **② 不读,只写。** 没有 `capture`、没有 `run`、没有输出流、没有录制、没有事件流。
 读终端内容这件事要么归**人**(打开那个 URL 看,ttyd 已经做完了),要么归 **ssh**
 (程序化拿输出和退出码,那条路本来就更直)。只留一个写入动作:往会话里敲
-([03 §2](03-http.md))。
+([03 §7](03-server.md))。
 
 **③ 全部可读可写,不做权限。** 没有只读 attach,没有只读链接,也没有 `share`。
 ttyd 的鉴权是进程级的,在这一层做"只读"只是**假的安全感**。
@@ -143,7 +147,7 @@ tmux ls          # 你自己的会话,一个不多一个不少
 | --- | --- |
 | [01-library.md](01-library.md) | `Tmuxd` 对象、进程模型、专属 socket、状态、鉴权、构造参数 |
 | [02-session.md](02-session.md) | 一个会话一个终端、身份就是 id、URL、多客户端、生命周期、对账 |
-| [03-http.md](03-http.md) | 可选的 HTTP 壳:为什么默认不开、端点表、往里敲、错误码 |
+| [03-server.md](03-server.md) | **两条链路**:SDK 不用 server,CLI 必须有;两个端口、端点表、可选依赖 |
 | [04-cli.md](04-cli.md) | 命令行,照 tmux 设计;以及它为什么不取代 tmux |
 | [05-consumers.md](05-consumers.md) | 谁该用它:shellbase 的迁移清单、与 webmuxd 的关系 |
 | [06-dependencies.md](06-dependencies.md) | 两个依赖两种态度:tmux 只探测,ttyd 自带兜底 |
@@ -153,8 +157,8 @@ tmux ls          # 你自己的会话,一个不多一个不少
 保持它是个工具,不是平台。判断新功能该不该加,问一句:**tmux 会做这个吗?** 不会就别加。
 而且还要再问一句:**这件事非得在这一层做吗?** 能往上放、能交给 ssh、能交给 ttyd 的,就别自己扛。
 
-- ❌ **读终端内容**(capture / run / 输出流 / 录制)—— 归人或归 ssh([03 §2](03-http.md))
-- ❌ **事件流** —— 没人会盯着一个 tmux 的事件;要状态就 `t.sessions()`([03 §7](03-http.md))
+- ❌ **读终端内容**(capture / run / 输出流 / 录制)—— 归人或归 ssh([03 §7](03-server.md))
+- ❌ **事件流** —— 没人会盯着一个 tmux 的事件;要状态就 `t.sessions()`([03 §12](03-server.md))
 - ❌ **window / pane** —— tmux 在这里只当共享 terminal 用,多路复用那部分不要([02 §1](02-session.md))
 - ❌ **只读 / 权限分级 / `share` 链接** —— 这一层全部可读可写,锁在上层([02 §4](02-session.md))
 - ❌ **接管用户已有的 tmux** —— 只探测二进制,一律 `-L` 开专属池([01 §4](01-library.md))
@@ -165,7 +169,7 @@ tmux ls          # 你自己的会话,一个不多一个不少
 - ❌ **多租户 / RBAC / 配额** —— 拿到凭据即拥有这批会话,边界靠网络和容器
 - ❌ **数据库** —— 状态是几个小 JSON,真相在 `tmux ls` 里
 - ❌ **跨机器编排 / 会话池 / 调度** —— 要多机就多台机器各跑一个
-- ❌ **自带 HTTP 客户端** —— 远端用 `ssh box tmuxd …`,或者直接 `requests` 打那七个端点([03 §8](03-http.md))
+- ❌ **自带 HTTP 客户端** —— 远端用 `ssh box tmuxd …`,或者直接 `requests` 打那七个端点([03 §13](03-server.md))
 
 ## 里程碑
 
@@ -174,5 +178,5 @@ tmux ls          # 你自己的会话,一个不多一个不少
 | **M1 库** | `Tmuxd` / `Session` 两个类、ttyd 生命周期与复用、专属 socket、state 与对账 | 四行代码起一个会话并拿到能用的 URL;`kill -9` 掉进程,会话无损 |
 | **M2 写入** | `send` / `send_key`、异常体系、tmux server 懒起的空列表处理 | 脚本能开会话、往里投喂、把 URL 交出去 |
 | **M3 CLI** | 命令行壳(同一个库)、配置文件、退出码 | 不写 Python 也能用全部能力 |
-| **M4 HTTP** | 可选的 HTTP 壳(默认不开) | 别的语言、别的容器能驱动同一批会话 |
+| **M4 server** | `tmuxd serve`(FastAPI + uvicorn,`[server]` extra)+ 管控口 | CLI 全套能用;别的语言能驱动同一批会话 |
 | **M5 收编** | shellbase 切过来 | shellbase 删掉 `attach.sh`、ttyd 守护与本地终端注册表,功能不回退 |
