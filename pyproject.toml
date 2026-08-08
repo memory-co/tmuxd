@@ -6,7 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "tmuxd"
 dynamic = ["version"]        # 单一来源:tmuxd/__init__.py
 description = "tmux + ttyd as a Python library: terminals that outlive the connection, that a program can type into and a person can open in a browser"
-readme = "README.md"
+# The repo front page is Chinese; PyPI reads English. Different audiences
+# arrive at each -- one from the tree, one from `pip search`-shaped
+# discovery -- so they are allowed to differ.
+readme = "README.en.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Twwy", email = "twwwwwy@gmail.com" }]
