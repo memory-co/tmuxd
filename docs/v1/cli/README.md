@@ -13,7 +13,7 @@ pip install tmuxd          # 需要机器上有 tmux(≥3.0);要网页入口还�
 
 ```console
 $ tmuxd start                        # 起服务:ttyd 守着,打印 URL 和 token
-$ tmuxd new -s work -c ~/proj
+$ tmuxd new -t work -c ~/proj
 work  →  http://127.0.0.1:7681/?arg=work
 
 $ tmuxd send -t work "npm test" --enter
@@ -45,6 +45,29 @@ work                 alive   1 client   node     /home/me/proj
 | `keys` | 往里**按键**(`C-c`、`Enter`…) | [keys.md](keys.md) |
 
 **十三条命令,每条就是一次库调用。** 没有任何命令能做库做不到的事。
+
+## 会话 id:`-t` / `--id`
+
+每条要指名会话的命令,收的都是**同一对参数**:
+
+```bash
+tmuxd new  -t work -c ~/proj     # 短形式
+tmuxd new  --id work -c ~/proj   # 规范写法,和库 / HTTP / webmuxd 同名
+```
+
+`--id` 是规范写法 —— 库里是 `t.session(id=…)`,HTTP 里是 `{"id": …}`,
+同家族的 webmuxd 也叫 `id`。`-t` 只是它的短形式。
+
+**收的只是一个 id,没有语法。** 没有 `work:1`、没有 `work:1.2` ——
+tmux 那套 `session:window.pane` 目标语法在这里不存在([设计理由](../works/04-cli.md))。
+
+| 旧写法(1.0.0) | 现在 |
+| --- | --- |
+| `new -s work` | `new -t work` / `new --id work` |
+| `send --target work` | `send -t work` / `send --id work` |
+
+**`-s` / `--session` / `--target` 全部继续可用,不设移除期限**,只是不再出现在
+`--help` 里。已经写好的脚本不用改。
 
 ## 全局选项
 
@@ -81,7 +104,7 @@ tmuxd new -s build -L ci                 # ❌ 不认
 | 6 | tmux server 没了(`tmux_gone`) | **告警,别重试** |
 
 ```bash
-tmuxd has -t work || tmuxd new -s work        # 3 就是"没有",不是错误
+tmuxd has -t work || tmuxd new -t work        # 3 就是"没有",不是错误
 ```
 
 ## 配置文件

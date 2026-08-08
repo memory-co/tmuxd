@@ -53,20 +53,55 @@ def out(capsys):
 
 def test_new_creates_and_prints_the_entrance(run, capsys, monkeypatch):
     monkeypatch.setenv("TMUXD_PORT", "12345")
-    assert run("new", "-s", "work") == 0
+    assert run("new", "-t", "work") == 0
 
     text = out(capsys)
     assert "work" in text and "?arg=work" in text
 
 
 def test_new_says_so_when_there_is_no_port(run, capsys):
-    assert run("new", "-s", "work") == 0
+    assert run("new", "-t", "work") == 0
     assert "no ttyd port" in out(capsys)
+
+
+def test_id_has_one_canonical_name_and_three_aliases(run, capsys):
+    """--id 是规范写法(和库 / HTTP / webmuxd 同名),-t 是短形式。
+
+    -s / --session / --target 是 1.0.0 的拼法,不设移除期限 —— 留着的成本是
+    一行 argparse,删掉的成本是别人的脚本(works/04-cli.md §3.1、§10)。
+    """
+    for flag in ("-t", "--id", "-s", "--session", "--target"):
+        assert run("new", flag, "same-%s" % flag.strip("-"), "--", "cat") == 0
+    capsys.readouterr()
+
+    t = lib(run)
+    try:
+        assert {s.id for s in t.sessions()} == {
+            "same-t", "same-id", "same-s", "same-session", "same-target"}
+    finally:
+        t.close()
+
+
+def test_the_aliases_stay_out_of_help(run, capsys):
+    """规范写法要显眼,旧拼法不该继续教给新人。"""
+    from tmuxd.cli import build_parser
+
+    sub = [a for a in build_parser()._actions if getattr(a, "choices", None)][0]
+    for name in ("new", "send", "kill", "url", "has", "rename", "keys"):
+        text = sub.choices[name].format_help()
+        assert "--id" in text, "%s 的 help 里没有 --id" % name
+        for stale in ("--session", "--target"):
+            assert stale not in text, "%s 的 help 里还印着 %s" % (name, stale)
+
+
+def test_a_missing_id_is_a_usage_error(run, capsys):
+    assert run("send", "x") == cli.EXIT_USAGE
+    assert "needs a session id" in capsys.readouterr().err
 
 
 def test_the_dash_dash_is_punctuation_not_the_command(run, capsys):
     """argparse.REMAINDER 会把 "--" 一起交回来。不剥掉就在跑命令 `-- cat`。"""
-    assert run("new", "-s", "c1", "--", "sh", "-c", "echo marker; sleep 30") == 0
+    assert run("new", "-t", "c1", "--", "sh", "-c", "echo marker; sleep 30") == 0
     capsys.readouterr()
 
     t = lib(run)
@@ -80,7 +115,7 @@ def test_the_dash_dash_is_punctuation_not_the_command(run, capsys):
 def test_cwd_and_env_reach_the_session(run, capsys, tmp_path):
     target = tmp_path / "sub"
     target.mkdir()
-    assert run("new", "-s", "e1", "-c", str(target), "-e", "GREETING=hi",
+    assert run("new", "-t", "e1", "-c", str(target), "-e", "GREETING=hi",
                "--", "sh", "-c", "pwd; echo [$GREETING]; sleep 30") == 0
     capsys.readouterr()
 
@@ -94,7 +129,7 @@ def test_cwd_and_env_reach_the_session(run, capsys, tmp_path):
 
 def test_send_passes_the_text_through_unchanged(run, capsys):
     """还是那句话 —— 壳这一层也不能把 Enter 变成回车。"""
-    run("new", "-s", "lit", "--", "cat")
+    run("new", "-t", "lit", "--", "cat")
     capsys.readouterr()
 
     assert run("send", "-t", "lit", "Enter the code") == 0
@@ -108,7 +143,7 @@ def test_send_passes_the_text_through_unchanged(run, capsys):
 
 
 def test_keys_presses_key_names(run, capsys):
-    run("new", "-s", "k1", "--", "cat")
+    run("new", "-t", "k1", "--", "cat")
     capsys.readouterr()
     assert run("keys", "-t", "k1", "C-c") == 0
 
@@ -121,7 +156,7 @@ def test_keys_presses_key_names(run, capsys):
 
 def test_url_prints_just_the_address(run, capsys, monkeypatch):
     monkeypatch.setenv("TMUXD_PORT", "12345")
-    run("new", "-s", "u")
+    run("new", "-t", "u")
     capsys.readouterr()
 
     assert run("url", "-t", "u") == 0
@@ -129,7 +164,7 @@ def test_url_prints_just_the_address(run, capsys, monkeypatch):
 
 
 def test_rename_and_kill(run, capsys):
-    run("new", "-s", "old", "--", "cat")
+    run("new", "-t", "old", "--", "cat")
     capsys.readouterr()
 
     assert run("rename", "-t", "old", "new") == 0
@@ -139,7 +174,7 @@ def test_rename_and_kill(run, capsys):
 
 
 def test_ls_and_its_format_string(run, capsys):
-    run("new", "-s", "f1", "--", "cat")
+    run("new", "-t", "f1", "--", "cat")
     capsys.readouterr()
 
     assert run("ls") == 0
@@ -159,7 +194,7 @@ def test_json_output_is_the_library_object(run, capsys):
 
 
 def test_has_uses_3_for_absent_which_is_an_answer(run):
-    run("new", "-s", "there", "--", "cat")
+    run("new", "-t", "there", "--", "cat")
     assert run("has", "-t", "there") == 0
     assert run("has", "-t", "absent") == cli.EXIT_NO_SESSION
 
@@ -169,7 +204,7 @@ def test_missing_session_exits_3(run):
 
 
 def test_bad_id_exits_4(run):
-    assert run("new", "-s", "bad:id") == cli.EXIT_STATE
+    assert run("new", "-t", "bad:id") == cli.EXIT_STATE
 
 
 def test_unreachable_remote_exits_5(tmp_path, monkeypatch):
@@ -193,7 +228,7 @@ def test_kill_server_demands_the_flag(run, capsys):
 
 
 def test_kill_server_with_the_flag(run, capsys):
-    run("new", "-s", "doomed", "--", "cat")
+    run("new", "-t", "doomed", "--", "cat")
     capsys.readouterr()
     assert run("kill-server", "--tmux", "-y") == 0
     assert run("has", "-t", "doomed") == cli.EXIT_NO_SESSION
@@ -213,7 +248,7 @@ def test_config_is_another_spelling_of_the_constructor(tmp_path, monkeypatch, ca
     name = "conf-%d" % os.getpid()
     try:
         assert cli.main(["-L", name, "--state-dir", str(tmp_path),
-                         "new", "-s", "cfg"]) == 0
+                         "new", "-t", "cfg"]) == 0
         assert ":23456/?arg=cfg" in capsys.readouterr().out
     finally:
         kill_pool(name)
@@ -228,7 +263,7 @@ def test_command_line_beats_the_config_file(tmp_path, monkeypatch, capsys):
     name = "prec-%d" % os.getpid()
     try:
         cli.main(["-L", name, "--state-dir", str(tmp_path), "--port", "34567",
-                  "new", "-s", "p"])
+                  "new", "-t", "p"])
         assert ":34567/?arg=p" in capsys.readouterr().out
     finally:
         kill_pool(name)
@@ -253,7 +288,7 @@ def test_start_status_stop_leaves_the_sessions_running(tmp_path, monkeypatch, ca
         assert "running" in capsys.readouterr().out
         assert port_open("127.0.0.1", port)
 
-        assert cli.main(base + ["new", "-s", "held", "--", "cat"]) == 0
+        assert cli.main(base + ["new", "-t", "held", "--", "cat"]) == 0
         capsys.readouterr()
 
         assert cli.main(base + ["stop"]) == 0

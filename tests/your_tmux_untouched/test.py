@@ -138,7 +138,9 @@ def test_kill_tmux_server_only_kills_its_own_pool(tmp_path, request):
 
         a.kill_tmux_server()
 
-        assert a.sessions() == [] or all(not s.alive for s in a.sessions())
+        # 写成两条明确的断言而不是一个 or:后者会藏住到底哪一支成立,
+        # 而且对 kill-server 的收尾时序敏感(曾偶发失败一次)。
+        assert wait_until(lambda: not a.has("in-a")), "a 的池该空了"
         assert b.has("in-b"), "另一个池不该受影响"
     finally:
         a.close()

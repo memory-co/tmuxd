@@ -114,7 +114,7 @@ for proj in projects:
 
 | 库 | CLI | HTTP |
 | --- | --- | --- |
-| `t.session(id, cwd, cmd, env)` | `tmuxd new -s ID -c DIR -- CMD` | `POST /api/sessions` |
+| `t.session(id, cwd, cmd, env)` | `tmuxd new -t ID -c DIR -- CMD` | `POST /api/sessions` |
 | `t.sessions()` | `tmuxd ls` | `GET /api/sessions` |
 | `t.get(id)` | `tmuxd has -t ID` | `GET /api/sessions/{id}` |
 | `t.info()` | `tmuxd info` | `GET /api/info` |
@@ -125,3 +125,5 @@ for proj in projects:
 | `s.url` | `tmuxd url -t ID` | 响应里的 `url` 字段 |
 
 **出问题时可以把任意一层翻译成另一层**,这是名字不搞"更友好的改名"的全部理由。
+CLI 那一列的 `-t` 就是 `--id` 的短形式 —— 三层里这个东西都叫 `id`,
+同家族的 webmuxd 也叫 `id`。

@@ -3,29 +3,32 @@
 一个会话就是**一个终端**:一个 id、一个启动目录、一条启动命令。没有 window,没有 pane,
 没有第四个字段。
 
-`-t` 收的永远是那个 id,**没有 tmux 那套 `session:window.pane` 目标语法**。
+每条命令收的都是同一对参数 **`-t` / `--id`** —— `--id` 是规范写法(和库、HTTP、
+webmuxd 同名),`-t` 是它的短形式。**只收一个 id,没有 `session:window.pane` 那套语法。**
+
+`-s` / `--session` / `--target` 是 1.0.0 的拼法,仍然可用,只是不再出现在 `--help` 里。
 
 ---
 
 ## `tmuxd new`
 
 ```
-tmuxd new [-s ID] [-c DIR] [-e K=V]... [-- COMMAND...]
+tmuxd new [-t ID] [-c DIR] [-e K=V]... [-- COMMAND...]
 ```
 
 **语义是"有则接上,无则创建"**(`tmux new-session -A`)。
 
 ```console
-$ tmuxd new -s work -c ~/proj
+$ tmuxd new -t work -c ~/proj
 work  →  http://127.0.0.1:12345/?arg=work
 
-$ tmuxd new -s ci-42 -c ~/proj -- npm run dev
+$ tmuxd new --id ci-42 -c ~/proj -- npm run dev
 ci-42  →  http://127.0.0.1:12345/?arg=ci-42
 ```
 
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
-| `-s, --session ID` | 自动生成(`0`、`1`、`2`…) | **要重入就自己给** |
+| `-t, --id ID` | 自动生成(`0`、`1`、`2`…) | **要重入就自己给** |
 | `-c, --cwd DIR` | `TMUXD_WORKSPACE`,再没有就当前目录 | 启动目录 |
 | `-e, --env K=V` | — | 可重复。落到 `tmux new-session -e` |
 | `-- COMMAND...` | `$SHELL` | 启动命令,写在 `--` 后面 |
@@ -41,7 +44,7 @@ ci-42  →  http://127.0.0.1:12345/?arg=ci-42
 - 没配 ttyd 端口时,那行箭头后面会写 `(no ttyd port configured)`。
 
 ```console
-$ tmuxd new -s bad:id
+$ tmuxd new -t bad:id
 ✗ bad_id: session id must not contain ':'
 ```
 
@@ -154,7 +157,7 @@ old → new
 只看退出码,不打印任何东西。给脚本用:
 
 ```bash
-tmuxd has -t work || tmuxd new -s work -c ~/proj
+tmuxd has -t work || tmuxd new -t work -c ~/proj
 ```
 
 | 退出码 | 含义 |
@@ -170,7 +173,7 @@ tmuxd has -t work || tmuxd new -s work -c ~/proj
 $ tmuxd send -t ghost x
 ✗ no session with id "ghost"        # 退出码 3
 
-$ tmuxd new -s bad:id
+$ tmuxd new -t bad:id
 ✗ bad_id: session id must not contain ':'   # 退出码 4
 ```
 

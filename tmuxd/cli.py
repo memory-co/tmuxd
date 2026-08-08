@@ -251,7 +251,7 @@ def cmd_new(args):
         words = words[1:]
     cmd = " ".join(shlex.quote(part) for part in words) if words else None
     env = dict(pair.split("=", 1) for pair in args.env) if args.env else None
-    session = t.session(id=args.session, cwd=args.cwd, cmd=cmd, env=env)
+    session = t.session(id=args.id, cwd=args.cwd, cmd=cmd, env=env)
     if args.json:
         print(json.dumps(session.to_dict(), indent=2))
     else:
@@ -282,7 +282,7 @@ def cmd_ls(args):
 
 def cmd_url(args):
     t = build(args)
-    session = t.get(args.target)
+    session = t.get(args.id)
     url = session.url
     if not url:
         sys.stderr.write("no ttyd port configured for this instance\n")
@@ -305,34 +305,34 @@ def cmd_url(args):
 
 def cmd_kill(args):
     t = build(args)
-    clients = t.get(args.target).kill()
-    print("killed %s%s" % (args.target,
+    clients = t.get(args.id).kill()
+    print("killed %s%s" % (args.id,
                            " (%d client(s) thrown out)" % clients if clients else ""))
     return EXIT_OK
 
 
 def cmd_rename(args):
     t = build(args)
-    t.get(args.target).rename(args.new_id)
-    print("%s → %s" % (args.target, args.new_id))
+    t.get(args.id).rename(args.new_id)
+    print("%s → %s" % (args.id, args.new_id))
     return EXIT_OK
 
 
 def cmd_has(args):
     t = build(args)
-    return EXIT_OK if t.has(args.target) else EXIT_NO_SESSION
+    return EXIT_OK if t.has(args.id) else EXIT_NO_SESSION
 
 
 def cmd_send(args):
     t = build(args)
-    t.get(args.target).send(args.text, enter=args.enter)
+    t.get(args.id).send(args.text, enter=args.enter)
     print("✓ sent")
     return EXIT_OK
 
 
 def cmd_keys(args):
     t = build(args)
-    t.get(args.target).send_key(*args.keys)
+    t.get(args.id).send_key(*args.keys)
     print("✓ sent")
     return EXIT_OK
 
@@ -414,6 +414,24 @@ def _fail(message, code):
 # -- parser ---------------------------------------------------------------
 
 
+def add_id(parser, *, required=True):
+    """``-t`` / ``--id``,外加三个隐藏的旧别名。
+
+    ``--id`` 是规范写法 —— 它和库、HTTP、webmuxd 的会话对象都叫同一个名字
+    (works/04-cli.md §3.1)。``-t`` 只是它的短形式:字母向 tmux 借了,概念没有。
+
+    ``-s`` / ``--session`` / ``--target`` 是 1.0.0 的拼法,留着不设期限,
+    但不打印在 --help 里。required 不交给 argparse,因为一个 dest 上挂两个
+    action 时它只会检查其中一个 —— 由 main() 统一报用法错。
+    """
+    parser.add_argument("-t", "--id", dest="id", metavar="ID",
+                        help="session id" + ("" if required else " (generated when omitted)"))
+    parser.add_argument("-s", "--session", "--target", dest="id",
+                        help=argparse.SUPPRESS)
+    parser.set_defaults(_needs_id=required)
+    return parser
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="tmuxd", description=__doc__.split("\n")[0])
     p.add_argument("--version", action="version", version="tmuxd %s" % __version__)
@@ -441,7 +459,7 @@ def build_parser():
     sub.add_parser("info", help="versions, ttyd, tmux, session counts").set_defaults(func=cmd_info)
 
     new = sub.add_parser("new", help="create or attach to a session")
-    new.add_argument("-s", "--session", help="session id (generated when omitted)")
+    add_id(new, required=False)
     new.add_argument("-c", "--cwd")
     new.add_argument("-e", "--env", action="append", metavar="K=V")
     new.add_argument("command", nargs=argparse.REMAINDER,
@@ -453,31 +471,31 @@ def build_parser():
     ls.set_defaults(func=cmd_ls)
 
     url = sub.add_parser("url", help="print the entrance URL")
-    url.add_argument("-t", "--target", required=True)
+    add_id(url)
     url.add_argument("-o", "--open", action="store_true", help="open a browser too")
     url.set_defaults(func=cmd_url)
 
     kill = sub.add_parser("kill", help="destroy a session")
-    kill.add_argument("-t", "--target", required=True)
+    add_id(kill)
     kill.set_defaults(func=cmd_kill)
 
     rename = sub.add_parser("rename", help="change a session id")
-    rename.add_argument("-t", "--target", required=True)
+    add_id(rename)
     rename.add_argument("new_id")
     rename.set_defaults(func=cmd_rename)
 
     has = sub.add_parser("has", help="exit 0 if the session exists")
-    has.add_argument("-t", "--target", required=True)
+    add_id(has)
     has.set_defaults(func=cmd_has)
 
     send = sub.add_parser("send", help="type literal text into a session")
-    send.add_argument("-t", "--target", required=True)
+    add_id(send)
     send.add_argument("text")
     send.add_argument("--enter", action="store_true")
     send.set_defaults(func=cmd_send)
 
     keys = sub.add_parser("keys", help="press tmux key names")
-    keys.add_argument("-t", "--target", required=True)
+    add_id(keys)
     keys.add_argument("keys", nargs="+")
     keys.set_defaults(func=cmd_keys)
 
@@ -490,7 +508,11 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "_needs_id", False) and not args.id:
+        return _fail("%s needs a session id: -t ID (or --id ID)" % args.command,
+                     EXIT_USAGE)
     try:
         return args.func(args)
     except SystemExit as exc:
