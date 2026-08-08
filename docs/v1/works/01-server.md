@@ -16,10 +16,10 @@
 │   └── tmux -L tmuxd ◀── 不是子进程,它自己活着 ─────────────────┼──┐
 └───────────────────────────────────────────────────────────────┘  │
                                                                    │
-   ┌─ tmux server(独立进程,独立 socket) ──────────────────────────┘
-   │   session work   window 0  pane %0 %1
-   │   session build  window 0  pane %2
-   └─  ← 你 ssh 进来 `tmux -L tmuxd attach -t work` 接的是同一个
+   ┌─ tmux server「tmuxd 专属」(独立进程,独立 socket) ────────────┘
+   │   session work    ← 一个会话 = 一个终端,不做 window / pane(02 §1)
+   │   session build
+   └─  由 tmuxd 全权管理;你自己的 `tmux` 在 default socket 上,互不相干(§2.1)
 ```
 
 **只暴露一个端口。** 终端网页、管理接口、I/O 接口在同一个 origin 下,
@@ -31,7 +31,7 @@
 | HTTP 对外 | `0.0.0.0:7681` | 关 | `--listen`,**必须配 `TMUXD_TOKEN`** |
 | 控制 socket | `$XDG_RUNTIME_DIR/tmuxd/default.sock` | 开 | 本机 CLI 走这个,靠文件权限,不需要 token |
 | ttyd | `127.0.0.1:<随机>` | 开 | 只服务本机的反代,端口号对外没有意义 |
-| tmux socket | `$TMUX_TMPDIR/tmux-$UID/tmuxd` | 开 | tmux 自己的,ssh 进来照常可用 |
+| tmux socket | `$TMUX_TMPDIR/tmux-$UID/tmuxd` | 开 | **tmuxd 专属**,和你自己的 tmux 不是同一个(§2.1) |
 
 **7681 是 ttyd 的传统端口,这是故意的**:tmuxd 站在 ttyd 原来的位置上,
 原本 `ttyd tmux new -A -s work` 的人换过来,浏览器书签都不用改。
@@ -66,6 +66,49 @@ tmuxd daemon (uvicorn)                    tmux server (-L tmuxd)
 `PR_SET_PDEATHSIG` 这条不能只写在 `finally` 里:uvicorn 处理完 SIGTERM 会把信号重新抛给
 原处理器,进程直接死于信号,`finally` 根本不执行(SIGKILL 更是如此)。
 这是 shellbase 踩过的坑,原样搬过来。
+
+### 2.1 专属 socket:tmuxd 全权管理,不碰你的 tmux
+
+**tmuxd 对 tmux 的全部依赖,就是知道二进制在哪。**
+
+```
+启动时只做两件事:
+  which tmux          →  TMUXD_TMUX_BIN 可覆盖,默认取 PATH
+  tmux -V             →  低于 3.0 直接拒绝启动(window-size / new-session -x/-y 要用)
+```
+
+**不去发现已有的 tmux server,不去接管用户正在用的会话,不读 `~/.tmux.conf`**
+(用 `-f` 指向随包配置)。
+
+会话池永远开在一个**专属 socket** 上,由 tmuxd 实例名推导:
+
+| tmuxd 实例 | tmux socket |
+| --- | --- |
+| 默认 | `tmux -L tmuxd` |
+| `tmuxd -L ci` | `tmux -L tmuxd-ci` |
+| **你自己的 tmux** | `tmux`(default socket)—— **tmuxd 看不见,也不去看** |
+
+`tmux -L` 开出来的是一个**完全独立的 server**:独立进程、独立 socket、独立会话空间。
+这是 tmux 自己提供的隔离机制,不是我们发明的。
+
+**为什么必须专属,而不是提供一个"接管现有 tmux"的开关:**
+
+- **tmuxd 要能对这批会话全权负责。** 对账([02 §7](02-session.md))、无中生有、GC、
+  按 URI 派生名字 —— 这些都建立在"这个 socket 里的东西都是我开的"之上。
+  一旦掺进用户手工开的工作会话,每条规则都得多一句"除非这是用户的",
+  而"用户的"和"我的"根本没有可靠的判据;
+- **反过来更要紧:tmuxd 绝不该动你的工作会话。** 一个后台服务在你自己的 tmux 里
+  改尺寸、跑 `pipe-pane`、甚至在 GC 时看着你那个跑了三天的会话 —— 光是"它有能力这么做"
+  就已经不可接受了。专属 socket 让这件事在物理上不可能;
+- **副作用是干净的心智模型**:`tmux ls` 是你的,`tmuxd ls` 是它的,两份清单永不相交。
+
+因此配置项里**没有** tmux socket 这一项:它由实例名推导,不给单独配。
+显式设成 `default` 会**拒绝启动**并说明理由 —— 这不是保守,是这条不变量的唯一守法。
+
+> 那"不是黑盒"的承诺还成立吗?成立,但降格为**逃生舱**:同 UID 下你当然可以
+> `tmux -L tmuxd ls` 进去看一眼、排个障。那是调试手段,不是使用方式 ——
+> 正常路径下你不该需要它,更不该在那个 socket 里手工 `new-session`
+> (真那么干了,见 [02 §7](02-session.md) 的 `external`)。
 
 ## 3. 跑法
 
@@ -105,7 +148,7 @@ docker run -d --name tmuxd -p 7681:7681 \
 | --- | --- | --- |
 | **tmuxd** | **全活着** | 重启后 `tmux ls` 一探全回来(§5 对账) |
 | **ttyd** | 全活着 | tmuxd 拉起新的,浏览器自动重连 |
-| **tmux server** | 全没,等价 `kill-server` | 无。state 里的记录标 `exited`,可按 cwd/cmd 重建 |
+| **tmux server**(tmuxd 那个) | 全没,等价 `kill-server` | 无。state 里的记录标 `exited`,可按 cwd/cmd 重建 |
 | **机器重启** | 全没 | 同上 —— tmux 从来不做跨重启持久化,tmuxd 也不假装做 |
 
 没有"unhealthy 状态机",没有 draining。崩了就重启,该丢的丢 —— 和 tmux 里某个 pane 的进程
@@ -147,7 +190,7 @@ docker run -d --name tmuxd -p 7681:7681 \
 | `TMUXD_TOKEN` | 随机生成并打印 | 访问令牌;绑 `0.0.0.0` 时必须显式设置 |
 | `TMUXD_PORT` | `7681` | 对外监听端口 |
 | `TMUXD_LISTEN` | `127.0.0.1` | 监听地址 |
-| `TMUXD_TMUX_SOCKET` | `tmuxd` | `tmux -L` 的名字;设 `default` 即接管你现有的 tmux |
+| `TMUXD_TMUX_BIN` | PATH 里的 `tmux` | tmux 二进制路径,**tmuxd 对 tmux 的唯一依赖**(§2.1) |
 | `TMUXD_TMUX_CONF` | 随包 `tmux.conf` | 传给 `tmux -f`,与你自己的 `~/.tmux.conf` 隔离 |
 | `TMUXD_STATE_DIR` | `~/.tmuxd` | 状态目录 |
 | `TMUXD_WORKSPACE` | daemon 的 cwd | 新会话的默认工作目录 |
@@ -164,10 +207,15 @@ docker run -d --name tmuxd -p 7681:7681 \
 ```conf
 set -g history-limit 10000        # capture -S - 能回滚多远
 set -g window-size latest         # 多客户端尺寸不一时跟随最后操作的那个,别被最小窗口截断
-set -g status off                 # 网页里一个会话一个页面,状态栏是噪音;用户可覆盖
+set -g status off                 # 一个会话就是一个终端,没有 window 可切,状态栏纯属噪音
 ```
 
 `window-size latest` 这条来自 shellbase 的协作设计:默认值会让所有人被最小的那个窗口截断。
+`status off` 则是"不做 window/pane"([02 §1](02-session.md))的直接后果 ——
+状态栏上那排窗口标签,在这里永远只有一项。
+
+**不 unbind 任何按键。** 用户 attach 进去按 `C-b %` 分屏是他在用 tmux,拦他没道理;
+tmuxd 只是不为分屏提供任何 API,操作一律落在活动 pane 上(02 §1)。
 
 ## 7. 鉴权
 
@@ -176,6 +224,9 @@ set -g status off                 # 网页里一个会话一个页面,状态栏�
 | unix socket | 文件权限(0600,只有你自己)。**不需要 token** |
 | HTTP `/api/*` | `Authorization: Bearer $TMUXD_TOKEN`,或登录后的 HttpOnly Cookie |
 | HTTP `/s/<name>/` 与 `/tty/` | 同上,或该会话的一次性分享 token(见 [02 §4](02-session.md)) |
+
+**只有一个权限档:全部可读可写。** 分享 token 收窄的是**能碰哪个会话**和**能碰多久**,
+不是能不能写 —— tmuxd 这一层不做只读,理由与"该往哪层锁"见 [02 §4](02-session.md)。
 
 鉴权是包在 ASGI 应用**最外层**的一道门(`AuthGate`),HTTP 与 WebSocket 一视同仁:
 没有有效令牌,任何请求都到不了下游路由,WS 在 accept 之前就被关掉,握手不会建立。
@@ -199,8 +250,9 @@ v1 不做证书自动化。
 - WebSocket 反代必须**先连上游、拿到子协议协商结果,再 accept 客户端**,否则子协议对不上
   (ttyd 用的是 `tty` 子协议);
 - ttyd 以 `-i 127.0.0.1 -p 0 -W -a /opt/tmuxd/bin/attach.sh` 启动:`-p 0` 让内核挑空闲端口
-  (写死会跟用户自己跑的 ttyd 撞车),`-a` 允许 URL 传参,`-W` 打开可写
-  —— **只读是在 tmux 层用 `attach -r` 实现的,不在 ttyd 层**(理由见 [02 §4](02-session.md))。
+  (写死会跟用户自己跑的 ttyd 撞车),`-a` 允许 URL 传参,`-W` **无条件打开可写**
+  —— ttyd 的可写性是进程级的,而这一层根本不分权限,所以它是个常量,不是开关
+  ([02 §4](02-session.md))。
 
 > **实测(2026-08-08,本机)**:tmux 3.3a、ttyd 1.7.7。
 > `ttyd --help` 确认 `-a/--url-arg`、`-W/--writable`(**readonly by default**)、

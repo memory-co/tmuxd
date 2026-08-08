@@ -21,7 +21,7 @@ shellbase(`docs/v1/works/design.md`)是一个 Web 工作台:
 | 拉起并守护 ttyd 子进程(`cli.py` 的一部分) | **删掉**,归 tmuxd 管([01 §2](01-server.md)) |
 | `/tty/` 反代 + WS 子协议协商(`gateway.py` 的一部分) | 改成反代到 tmuxd(或干脆让 iframe 直连 tmuxd) |
 | `state/terminals/*.json` + 对账循环(backend.md §7) | **删掉**,tmuxd 的 state 就是这个([02 §7](02-session.md)) |
-| `SHELLBASE_TMUX_SOCKET` / `SHELLBASE_TMUX_CONF` | 变成 tmuxd 的配置 |
+| `SHELLBASE_TMUX_SOCKET` / `SHELLBASE_TMUX_CONF` | **删掉** —— tmuxd 的会话池是专属的,socket 由实例名推导([01 §2.1](01-server.md)) |
 | 布局 `windows/*.json`、URL bar、文件 API、协作广播 | **原样留着** —— 这些不是终端服务的事 |
 
 具体到接口:
@@ -58,8 +58,9 @@ shellbase(`docs/v1/works/design.md`)是一个 Web 工作台:
   所以 tmuxd 必须补上这一层 —— 这是本次剥离带来的**唯一一处能力扩张**,
   也是 shellbase 顺带获得的:它以后想做"给 Agent 块发一条指令"或"把 Agent 的输出喂给模型",
   接口已经在了;
-- **只读围观链接**(`share`)。shellbase 的协作是 window 粒度的(collab.md §3),
-  没法单独分享一个终端;tmuxd 的 `share` 补上了这条,shellbase 想用随时可用;
+- **单个终端的分享链接**(`share`)。shellbase 的协作是 window 粒度的(collab.md §3),
+  没法单独把一个终端交出去;tmuxd 的 `share` 签的是限定到单会话、带过期的 token,
+  补上了这条。注意它**不是只读** —— 只读要在 shellbase 那层判([02 §4](02-session.md));
 - **门面重启会话无损**。现在 ttyd 是 shellbase 的子进程,shellbase 升级重启会踢掉所有终端连接;
   切过来之后 tmuxd 独立跑,shellbase 重启不影响任何会话。
 
@@ -76,13 +77,23 @@ tmuxd 就是那句话去掉后半段 —— **字符版的本体**。两边刻�
 | 往里敲 | `POST /keys`(`send-keys`) | `POST /api/act`(点击/输入) |
 | 读出来 | `GET /capture`(`capture-pane`) | `GET /api/observe`(元素表 + 标注截图) |
 | 人怎么看 | ttyd 的网页 | KasmVNC 的画面 |
-| 分享 | 默认只读(抄 ttyd) | 默认只读(抄 ttyd) |
+| 分享 | 限范围 + 限时,**不限读写** | 默认只读(抄 ttyd) |
 | 历史 | scrollback / 录制 | 操作日志 |
 | **需要 runtime 抽象吗** | **不需要** —— 只有一种拉法,而且不跟着 daemon 死 | 需要 —— container / process / remote 三种 |
-| **做 pane 吗** | **做** —— 底下是真 tmux | 不做 —— 一块 VNC 屏只显示一个 tab |
+| **做 pane / tab 分屏吗** | 不做 —— 一个会话就是一个终端 | 不做 —— 一块 VNC 屏只显示一个 tab |
 | 默认部署形态 | pip 装在机器上 | 容器 |
 
-错误码的二分(能自愈的 vs 该告警的)、`-t` 目标语法、`share` 的默认只读、
+两处刻意的分歧值得记一笔:
+
+- **分享的默认值不一样。** webmuxd 抄 ttyd 的"默认只读"是对的 ——
+  那边一条链接能操作你带着登录态的浏览器,而"看"本身就有价值。
+  tmuxd 不抄:它的 token 本来就意味着整台机器的 shell,再加一个只读开关是假的边界,
+  锁该往上层放([02 §4](02-session.md));
+- **多路复用的位置不一样,但结论一样。** 两边都不做分屏 ——
+  webmuxd 是因为做不到(一块 VNC 屏只显示一个 tab),tmuxd 是因为不该做
+  (调用方本来就在做)。殊途同归:**一个 session 就是一块屏。**
+
+错误码的二分(能自愈的 vs 该告警的)、`-t` 目标语法、幂等键、
 "不给 `-t` 又有多个会话就报错不猜"——这些约定两边一致,是为了让**同一个调用方**
 同时驱动一个终端和一个浏览器时,手感是一套。
 
@@ -93,24 +104,28 @@ tmuxd 就是那句话去掉后半段 —— **字符版的本体**。两边刻�
 
 不经过任何平台,tmuxd 自己就成立:
 
-**① 给现有的 tmux 开个口。** 最短的一条:
+**① 给一台机器加一个终端服务口。** 最短的一条:
 
 ```bash
-tmuxd start --tmux-socket default
+pip install tmuxd && tmuxd start
 ```
 
-你已经在跑的那些会话立刻有了网页、有了 API、能分享给同事。零迁移。
+这台机器立刻有了会话 API、有了网页终端、能把某个会话分享出去 ——
+而且**它原有的一切都没变**:你自己的 `tmux ls` 一个不多一个不少,
+tmuxd 的会话池在自己的 socket 上([01 §2.1](01-server.md))。
+装一个服务不该动到你手里正在跑的东西。
 
 **② Agent 宿主。** 在若干个仓库目录里各跑一个 CLI Agent,程序化投喂任务、
-程序化读输出,同时给每个会话一条只读链接贴进工单 —— 人随时能围观、能接管。
+程序化读输出,同时给每个会话一条分享链接贴进工单 —— 人随时能看、能接管。
 代码见 [04 §5](04-api-and-sdk.md)。
 
 **③ 远程运维 / CI。** 需要"在那台机器的那个会话里"跑命令(有环境、有现场、有人盯着),
 而不是起一个干净的 ssh。`tmuxd -H … run --exit-code` 就是这个用途。
 不需要这个"现场"属性的批处理,**请用 ssh**([03 §4](03-io.md))。
 
-**④ 结对 / 教学。** `tmuxd share` 出一条只读链接,对方浏览器打开就能看你敲命令;
-要他接手就发 `--writable` 的那条。tmux 的 pair programming,不用给对方开账号。
+**④ 结对 / 教学。** `tmuxd share` 出一条链接,对方浏览器打开就进了同一个终端 ——
+看得见,也能直接接手。tmux 的 pair programming,不用给对方开账号。
+要"只能看不能敲",那是一个授权问题,在有身份的那一层解决([02 §4](02-session.md))。
 
 ## 4. 故意留给调用方的东西
 
@@ -118,6 +133,8 @@ tmuxd start --tmux-socket default
 
 | 不做 | 归谁 |
 | --- | --- |
+| **只读 / 谁能写谁不能写** | 有身份的那一层:shellbase 的用户体系、反代的路径放行、或你的编排程序([02 §4](02-session.md)) |
+| **多个终端的组织方式**(window / pane / 标签) | 调用方 —— 要几个终端就开几个会话([02 §1](02-session.md)) |
 | 布局 / 分屏画布 / 标签页 | 调用方(shellbase 的 window + 网格剖分) |
 | "关闭块就杀会话"这类回收策略 | 调用方([02 §6](02-session.md)) |
 | URI 里 `window` / `block` 的语义 | 调用方([02 §2.1](02-session.md)) |

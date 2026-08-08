@@ -1,29 +1,56 @@
 # 02 · session
 
-## 1. 会话就是 tmux 的会话
+## 1. 一个会话就是一个终端
 
-tmuxd 不发明会话模型。一个 tmuxd session **就是**底下那个 tmux server 里的一个 session,
-带着它原本的 window 和 pane。
+tmuxd 只借 tmux 的**一件事**:
 
-| tmux | tmuxd | API 里 |
-| --- | --- | --- |
-| session | session | `/api/sessions/{target}` |
-| window | window | `target` 写成 `work:1` |
-| pane | pane | `target` 写成 `work:1.2`,或直接 `%7` |
+> 让一个 shell **活得比连接久**,并且**能被多个客户端同时看见**。
 
-**pane 保留**,和 webmuxd 不一样 —— 那边一块 VNC 屏同时只能显示一个 tab,所以它砍掉了 pane;
-tmuxd 底下是真 tmux,分屏本来就有,砍掉反而要多写代码。
-`target` 语法直接沿用 tmux 的 `session[:window[.pane]]`,用过 tmux 的人不用查文档。
+tmux 的另一半能力 —— window / pane 那套多路复用 —— **不用,也不暴露**。
 
-不给 window/pane 时,操作落在**当前活动的那个** —— 也是 tmux 的规矩。
+| tmux | tmuxd |
+| --- | --- |
+| session | **session,就是一个终端** |
+| window | — 不做 |
+| pane | — 不做 |
 
-## 2. 两种寻址,一个身份
+一个会话 `new-session -d` 出来天然就是一个 window、一个 pane,tmuxd 不再动它:
+不提供分屏、不提供切窗口、不提供按 window/pane 寻址。
+
+### 为什么砍掉
+
+**因为多路复用这件事,调用方本来就在做。** shellbase 有一整块可自由分割的画布,
+你自己的脚本有一个会话列表 —— 要多个终端就多开几个会话。
+在 tmuxd 里再做一层 window/pane,是把同一件事做两遍,而且两遍的模型还不一样。
+
+砍掉之后收益是实打实的,不是洁癖:
+
+- **target 退化成一个名字。** 没有 `work:1.2`、没有 `%7`、没有 tmux 那套目标语法要学
+  ——调用方只需要知道会话叫什么;
+- **`keys` / `capture` / `run` 不用选 pane。** 少一个参数,也少一整类"打到别的 pane 里去了"的 bug;
+- **`#{pane_current_command}` 直接就是会话的状态**,不用先问"哪个 pane 是活动的";
+- **和 webmuxd 对称了。** 那边不做 pane(一块 VNC 屏同时只显示一个 tab),这边也不做,
+  两个产品的模型是同一个形状。
+
+### 人自己分屏了怎么办
+
+不禁。tmux 的按键还在,你 attach 进去按 `C-b %` 照样分屏 —— 那是你在用 tmux,不是在用 tmuxd。
+
+规则很简单:**tmuxd 的所有操作一律把 `-t <session>` 交给 tmux 自己解析**,
+也就是落在**当前活动 window 的当前活动 pane** 上。这是 tmux 的默认行为,天然正确,
+tmuxd 一行特判都不用写。
+
+会话池是 tmuxd 专属的([01 §2.1](01-server.md)),所以"多 window/pane 的会话"只能是
+attach 进去的人自己分出来的。规则一样:能 attach、能 capture、能 send,只认活动的那个。
+tmuxd 不假装看不见它们,也不假装能管它们。
+
+## 2. 身份:名字,或者 URI
 
 会话的身份是 **tmux 会话名**。找到它有两条路:
 
 | 寻址方式 | 长什么样 | 谁用 |
 | --- | --- | --- |
-| **名字** | `work`、`build:1.0` | 人、CLI、脚本 |
+| **名字** | `work` | 人、CLI、脚本 |
 | **URI** | `claude:///home/me/proj?window=main&block=2` | 平台(shellbase 这类调用方) |
 
 `target` 参数**同时接受两种**:不含 `://` 的按名字解析,含的先规范化成 URI 再确定性派生名字。
@@ -47,13 +74,16 @@ shellbase 的 `window` / `block` 是它自己的布局概念,tmuxd 眼里它们�
 参与身份的字符串。tmuxd 既不知道什么是 window,也不校验它 —— 这个切口划在这里,
 是为了让布局语义留在布局那一层,别渗进终端服务。
 
+> 顺带说明一处巧合:shellbase 的身份参数恰好叫 `window`,而 tmuxd 又刚好不做 tmux 的 window。
+> 两者毫无关系 —— 前者是**页面**,后者是 tmux 的窗口。tmuxd 对前者不解释,对后者不提供。
+
 ### 2.2 规范化与派生
 
 规范化规则:
 
 - scheme 小写、path 去尾斜杠、`%` 编码归一;
-- **剔除非身份参数**:`mode` 是唯一的内置非身份参数(只影响本次怎么打开);
-- 其余 query 参数**全部参与身份**,按键名排序后定序。
+- **query 参数全部参与身份**,按键名排序后定序(这一层没有"非身份参数"了 ——
+  原先唯一的那个 `mode=ro` 随只读一起删掉了,见 §4)。
 
 派生会话名 = 可读 slug + URI 规范形的短哈希:
 
@@ -125,8 +155,9 @@ POST /api/sessions
 | 参数 | 说明 |
 | --- | --- |
 | `target` | 会话名或 URI(§2)。必填 |
-| `mode` | `ro` = 只读 attach(`tmux attach -r`)。**只读不触发无中生有** —— 观看一个不存在的会话没有意义,直接 `404 no_such_session` |
-| `create` | `false` = 关掉无中生有,不存在就 `404` |
+| `create` | `false` = 关掉无中生有,不存在就 `404 no_such_session` |
+
+**只有两个参数。** 没有 `mode` —— attach 一律是完整的读写 attach,理由见 §4。
 
 前端(不管是 tmuxd 自带的薄壳页,还是 shellbase 那样的 iframe 调用方)**永远把 iframe 的
 src 指向 attach 端点,不直接指向 `/tty/`**。浏览器对 iframe 内的 302 会自动跟随,
@@ -139,14 +170,19 @@ ttyd 的 `-a` 允许 URL 传参,那就意味着有人能直接敲 `/tty/?arg=rog
 
 ```bash
 # bin/attach.sh —— ttyd -W -a 调用,$1 = 会话名
+# $_TMUXD_SOCK 由 tmuxd 拉 ttyd 时注入(实例名推导而来,不是用户配置项,01 §2.1)
 [ -n "$1" ] || exit 1
-if ! tmux -L "${TMUXD_TMUX_SOCKET:-tmuxd}" has-session -t "=$1" 2>/dev/null; then
+if ! tmux -L "$_TMUXD_SOCK" has-session -t "=$1" 2>/dev/null; then
     echo "unknown session: $1 (open it via tmuxd)"; exit 1
 fi
-exec tmux -L "${TMUXD_TMUX_SOCKET:-tmuxd}" attach-session ${TMUXD_RO:+-r} -t "=$1"
+exec tmux -L "$_TMUXD_SOCK" attach-session -t "=$1"
 ```
 
-注意两处细节:
+**六行,没有一个条件分支** —— 这是"不做只读"带来的实现红利:
+原本这里要按模式在 `attach-session` 和 `attach-session -r` 之间分叉,
+还得把模式一路从 URL 传到环境变量再传到脚本。现在没有模式。
+
+另外两处细节:
 
 - **`attach-session` 而不是 `new-session -A`** —— 创建的活全在 tmuxd 那边干完了,
   这里只负责接上。`attach.sh` 从不创建会话,这条比 shellbase 的版本更严:
@@ -154,43 +190,66 @@ exec tmux -L "${TMUXD_TMUX_SOCKET:-tmuxd}" attach-session ${TMUXD_RO:+-r} -t "=$
 - **`-t "=$1"`** —— `=` 前缀关掉 tmux 的前缀匹配。不加的话 `attach -t work` 会匹配上
   `workbench`,是个真实会踩的坑。
 
-## 4. 只读与分享
+## 4. 分享,以及为什么这一层不锁
 
-抄 ttyd 的默认值:**ttyd 默认只读,要 `-W` 才允许客户端敲键盘。这个默认是对的。**
-但要把两件事分开,不要混:
+**tmuxd 里全部可读可写。** 没有只读 attach,没有只读链接,没有 `read_only` 错误码。
 
-| | 谁用 | 鉴权 | 权限 |
-| --- | --- | --- | --- |
-| `tmuxd attach` | **你自己** | 控制 socket(文件权限)或你的 token | 完整 |
-| `tmuxd share` | **给别人** | 一次性 token,带过期 | **默认只读** |
+### 4.1 只读在这一层是假的
+
+ttyd 默认只读、webmuxd 抄了这个默认 —— 那在**它们**的处境下是对的。
+但把同一套搬到 tmuxd 会得到一个骗人的东西:
+
+> 一个能列会话、能开新会话的 token,给他一个"只读 attach"有什么意义?
+> 他直接 `POST /api/sessions` 开一个新会话,在里面 `tmux -L tmuxd attach -t work` 就进去了。
+
+只读要真的成立,前提是"**这个凭据只能碰这一个会话、而且只能读**"。
+那不是一个开关,那是一个**授权模型**:得先有身份,才谈得上谁能看谁能写。
+tmuxd 只有一个 token,它的安全模型自始至终是一句话 ——
+**拿到 token 即拥有这台机器的 shell**。在这个前提下加一个只读开关,
+只会让人以为自己有边界,而实际上没有。这比没有边界更糟。
+
+### 4.2 所以锁在上层
+
+真要区分"谁能看、谁能写",在**有身份的那一层**做:
+
+| 上层 | 怎么锁 |
+| --- | --- |
+| **shellbase 这类平台** | 它有自己的用户体系和 window 粒度的分享;它决定给谁渲染一个能敲字的 iframe,给谁渲染一个禁掉输入的 |
+| **反代 / 网关** | 按路径和方法放行:只放 `GET /api/sessions/*/capture` 和 `WS /stream`,不放 `POST /keys` —— 这才是货真价实的只读,而且是在有身份的地方判的 |
+| **你自己的编排程序** | 它本来就持有全部能力,爱怎么分发就怎么分发 |
+
+**tmuxd 给上层的是完整能力,不是残缺能力。** 上层拿完整的,自己往下切;
+下层给残缺的,上层只能干瞪眼。这个方向不能反。
+
+顺带的好处:`attach.sh` 没有分支(§3.1)、ttyd 一律 `-W`([01 §8](01-server.md))、
+API 少一个参数、错误码少一条、SDK 少一个布尔。**少掉的这些都是不会写错的地方。**
+
+### 4.3 share 还在,但它不是只读
 
 ```console
 $ tmuxd share -t work
-http://box:7681/s/work/?t=...   (只读,1 小时后过期)
+http://box:7681/s/work/?t=…   (1 小时后过期)
+⚠ 拿到这个链接的人能在你的机器上执行任意命令
 
-$ tmuxd share -t work --writable
-http://box:7681/s/work/?t=...   (可操作,1 小时后过期)
-⚠ 这个链接能在你的机器上执行任意命令
+$ tmuxd share -t work --ttl 15m
 ```
 
-这个不对称是故意的:一个能在你机器上敲命令的链接,不该顺手就发出去。
+`POST /api/sessions/{t}/share` 签一个**限定到单个会话、带过期**的一次性 token。
+它解决的不是"能不能写",而是另外两件真实的事:
 
-**只读在 tmux 层实现,不在 ttyd 层。** ttyd 起的时候是 `-W`(可写),
-只读性由 `attach.sh` 改用 `tmux attach-session -r` 保证。理由:ttyd 的可写性是**进程级**的,
-一个进程服务所有会话,没法按连接区分;而 `-r` 是**客户端级**的,同一个会话可以同时挂着
-一个可写客户端和三个只读客户端 —— 正是"我干活、同事围观"要的形状。
+- **不用把主 token 发出去** —— 主 token 能列会话、能开新会话、能杀会话,分享 token 只能碰这一个;
+- **会过期** —— 发出去的东西自己会失效,不用记得回收。
 
-一次性 token 由 `POST /api/sessions/{t}/share` 签发,`{read_only, ttl_s}`,
-默认 `read_only: true`、`ttl_s: 3600`。token 只对**这一个会话**有效,
-不能拿去调 `/api/sessions` 列别的会话。
+这是**能力收窄**,不是权限分级。警告那一行必须打印,而且不能靠 `--writable` 之类的开关
+来"确认" —— 因为根本没有另一种模式可选,发链接这个动作本身就是全部的授权。
 
 ## 5. 多客户端
 
 tmux 的协作哲学是:会话独立于客户端存在,客户端只是"看向"它的窗口 —— 可以有任意多个,
 来了就镜像、走了不影响。tmuxd 原样继承,**零额外工作**:
 
-- N 个浏览器 attach 同一个会话 = N 个 tmux 客户端,输出实时镜像,可写的那些都能敲;
-- **人和程序也是这个关系**:你在网页里敲的和 `POST /keys` 打进去的,进的是同一个 pane。
+- N 个浏览器 attach 同一个会话 = N 个 tmux 客户端,输出实时镜像,**每一个都能敲**;
+- **人和程序也是这个关系**:你在网页里敲的和 `POST /keys` 打进去的,进的是同一个终端。
   这不是我们做的功能,是 tmux 白送的性质;
 - 尺寸冲突用 `window-size latest` 解决(跟随最后操作的客户端),否则所有人被最小的那个窗口截断;
 - `#{session_attached}` / `list-clients` 给出当前挂了几个客户端,`GET /api/sessions` 里
@@ -214,7 +273,8 @@ tmuxd 不知道 —— 它面对的调用方可能只是刷新了一下页面。
 删除时会话正被别人 attach 也照删(tmux 会把所有客户端踢出),响应里带上被踢掉的
 `clients` 数,让调用方能在 UI 上解释发生了什么。
 
-配套的 `POST /api/sessions/{t}/kill-window`、`kill-pane` 同理:显式才动。
+没有 `kill-window` / `kill-pane` 这类端点 —— 因为没有 window 和 pane(§1)。
+会话是**唯一**的生命周期单位,创建、attach、销毁,三个动词到头。
 
 ## 7. 对账与回收
 
@@ -225,15 +285,24 @@ state 说的(应然)和 `tmux ls` 里实际存在的(实然)会漂移,tmuxd 负�
 | 情况 | 处理 |
 | --- | --- |
 | **state 有、tmux 无** | 标 `status: exited`,**保留记录**。调用方可能还引用着它,凭 cwd/cmd 能重建 |
-| **tmux 有、state 无** | 标 `kind: external`,**不杀、不收编**。列出来,可以 attach,但没有 URI/cwd 记录 |
-| **两边都有** | 正常,顺带刷新 `clients`、`windows` 等实时字段 |
+| **tmux 有、state 无** | 标 `kind: external`,**不杀、不收编**,并记一条 warning 日志 |
+| **两边都有** | 正常,顺带刷新 `clients`、`current_command` 等实时字段 |
 
-`external` 不是异常路径,是**一等场景**:你 ssh 进机器 `tmux -L tmuxd new -s hotfix`,
-它立刻就在网页上出现;`TMUXD_TMUX_SOCKET=default` 接管你现有 tmux 时,
-一开始**所有会话都是 external**。这条路必须好用,不能因为"没有 state 记录"就残废。
+**正常情况下 `external` 一条都不该有。** 会话池是 tmuxd 专属的
+([01 §2.1](01-server.md)),里面的东西按定义都是 tmuxd 开的 ——
+出现 `external` 只意味着一件事:有人绕过 tmuxd,直接往那个 socket 里
+`tmux -L tmuxd new-session` 了。
 
-external 会话缺的只是 tmux 答不上来的那部分(URI、启动命令、创建者),
-attach / capture / keys / kill 一概照常。
+所以它是**漂移,不是场景**。tmuxd 的处理是"看见、说出来、但不动手":
+
+- **列出来**,标 `kind: external`,`ls` 里显眼;日志里记一条 warning,附一句
+  "这个会话不是 tmuxd 开的,它不参与重建";
+- **能 attach / capture / keys / kill** —— 既然它就在那儿,残废地对待它没有好处;
+- **绝不杀、绝不收编** —— 不给它补一份 state 假装是自己开的,那会把一个可见的异常
+  变成一个看不见的谎。
+
+这条设计跟 shellbase 的做法一致(它那边 `external` 是"用户在终端里手工 `tmux new`"),
+差别在于 tmuxd 用专属 socket 把这种情况从"常态"压到了"不该发生"。
 
 **GC 只是兜底,永远不杀活着的会话。** 它清的是 `status: exited` 且超过保留期
 (默认 7 天,`TMUXD_GC_TTL`)的 state 文件 —— 纯粹是删几个 JSON。
@@ -252,19 +321,22 @@ attach / capture / keys / kill 一概照常。
     "status": "alive",                // alive | exited
     "cwd": "/home/me/proj",
     "cmd": "claude",
-    "windows": 1,
+    "cols": 120, "rows": 40,
     "clients": 2,                     // 当前 attach 的客户端数
-    "current_command": "claude",      // #{pane_current_command},活动 pane 里跑的是什么
+    "current_command": "claude",      // #{pane_current_command},终端里跑的是什么
     "created_at": "2026-08-08T09:00:00Z",
     "last_attached": "2026-08-08T10:30:00Z",
     "attach_url": "/s/claude-proj-7b21e0/" },
 
   { "name": "hotfix", "kind": "external", "status": "alive",
-    "windows": 3, "clients": 1, "current_command": "vim",
-    "attach_url": "/s/hotfix/" }      // ← external 缺 uri/cwd/cmd,其余照常
+    "cols": 80, "rows": 24, "clients": 1, "current_command": "vim",
+    "warning": "not created by tmuxd",   // ← 有人绕过 tmuxd 直接开的,§7
+    "attach_url": "/s/hotfix/" }
 ] }
 ```
 
-`clients` 和 `current_command` 是**现场探的**,不是 state 里读的。
+**没有 `windows` 计数,没有 pane 列表** —— 不做的东西不出现在响应里(§1)。
+
+`clients`、`current_command`、`cols/rows` 是**现场探的**,不是 state 里读的。
 `current_command` 尤其有用:它是"这个会话现在在干嘛"最便宜的答案,
-也是 [03 §3](03-io.md) 里 `run` 的守卫依据。
+也是 [03 §4](03-io.md) 里 `run` 的守卫依据。

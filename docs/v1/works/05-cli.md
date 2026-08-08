@@ -4,18 +4,18 @@
 
 ## 1. 先说清楚:它不取代 tmux
 
-**你人在那台机器的终端里,就用 `tmux`。** 别用 tmuxd 的 CLI ——
-它要过一层 HTTP,只会更慢更绕。
+**你人在那台机器的终端里,想开个自己的会话干活,就用 `tmux`。**
+那是你的 tmux,tmuxd 看不见也不碰([01 §2](01-server.md))。
 
-`tmuxd` 的 CLI 是给**从外面**用的:
+`tmuxd` 的 CLI 管的是**另一套**东西 —— tmuxd 自己那个 session 池,给**从外面**用的:
 
 | 场景 | 用什么 |
 | --- | --- |
-| 我 ssh 在那台机器上,想开个会话干活 | `tmux`(或 `tmux -L tmuxd`,接的是同一批会话) |
+| 我 ssh 在那台机器上,想开个会话自己干活 | `tmux`(你自己的 socket,与 tmuxd 无关) |
 | CI 脚本要在远端机器上跑一串命令并拿退出码 | `tmuxd -H … run` |
-| 我要把一个会话分享给同事围观 | `tmuxd share` |
-| 我要看这台机器上现在有哪些会话、谁挂着 | `tmuxd ls` |
-| 我在写调用方,想先手敲试试 API | `tmuxd`(每条命令就是一次 API 调用,§8) |
+| 我要把一个会话交给同事接着弄 | `tmuxd share` |
+| 我要看 tmuxd 手里现在有哪些会话、谁挂着 | `tmuxd ls` |
+| 我在写调用方,想先手敲试试 API | `tmuxd`(每条命令就是一次 API 调用,§9) |
 
 设计纪律:**和 tmux 同名的子命令,语义必须一致**;不一致的地方要么改名,要么在这份文档里
 单独列出来(§7)。
@@ -23,7 +23,7 @@
 ## 2. daemon
 
 ```bash
-tmuxd serve   [--listen 0.0.0.0:7681] [--tmux-socket NAME] [--record]
+tmuxd serve   [--listen 0.0.0.0:7681] [--record]
 tmuxd start   # 后台起,打印 URL 和 token
 tmuxd stop    # 停门面,会话全活着
 tmuxd status  # 回头核实:pid 在不在、health 应不应答、token 认不认
@@ -34,26 +34,32 @@ tmuxd info    # = GET /api/server
 $ tmuxd start
 tmuxd 1.0  →  http://127.0.0.1:7681
 token: 8f2c1e9a…(已存 ~/.tmuxd/token)
-tmux:  socket=tmuxd  version=3.3a  sessions=0
-
-$ tmuxd stop
-门面已停。3 个会话仍在运行(tmux -L tmuxd ls 可见)。
+tmux:  /usr/bin/tmux 3.3a   socket=tmuxd(专属)   sessions=0
 ```
 
-**`stop` 的那行提示不是客套话**,它是这个产品最需要被理解的性质
-([01 §2](01-server.md)):门面和屋子是分开的。
+**`tmux:` 那一行只报三件事:二进制在哪、版本多少、用的哪个专属 socket。**
+tmuxd 对 tmux 的全部依赖就这么多([01 §2](01-server.md))。
+
+```console
+$ tmuxd stop
+门面已停。3 个会话仍在运行(tmuxd start 回来即可)。
+```
+
+**`stop` 的那行提示不是客套话**,它是这个产品最需要被理解的性质:门面和屋子是分开的。
 
 ```bash
-tmuxd kill-server --tmux      # 真的要杀 tmux server(会话全没),需要确认
+tmuxd kill-server --tmux      # 真的要杀 tmuxd 的 tmux server(它的会话全没),需要确认
 ```
+
+`--tmux` 杀的是 **tmuxd 专属的那个 tmux server**,碰不到你自己的 —— 两者在不同 socket 上。
 
 ## 3. 会话
 
 ```bash
 tmuxd new  [-s NAME | URI] [-c DIR] [-x COLS] [-y ROWS] [-e K=V]... [-- CMD...]
 tmuxd ls   [--uri] [-F FORMAT]
-tmuxd attach -t NAME [-p] [--read-only]
-tmuxd share  -t NAME [--writable] [--ttl 1h]
+tmuxd attach -t NAME [-p]
+tmuxd share  -t NAME [--ttl 1h]
 tmuxd kill   -t NAME
 tmuxd rename -t NAME NEW
 tmuxd has    -t NAME
@@ -67,30 +73,25 @@ $ tmuxd new claude:///home/me/proj?window=main\&block=1
 claude-proj-7b21e0  →  http://127.0.0.1:7681/s/claude-proj-7b21e0/
 
 $ tmuxd ls
-work                 alive   1 window   2 clients  bash    ~/proj
-claude-proj-7b21e0   alive   1 window   0 clients  claude  ~/proj
-hotfix               alive   3 windows  1 client   vim     ~          external
-stale                exited  —          —          —       —          7 天后自动清
+work                 alive   2 clients  bash    ~/proj
+claude-proj-7b21e0   alive   0 clients  claude  ~/proj
+stale                exited  —          —       —          7 天后自动清
 
 $ tmuxd attach -t work            # 用默认浏览器打开
 $ tmuxd attach -t work -p         # 只打印 URL(无 GUI 环境用)
 http://127.0.0.1:7681/s/work/
 
 $ tmuxd share -t work
-http://box:7681/s/work/?t=…   (只读,1 小时后过期)
-
-$ tmuxd share -t work --writable
-http://box:7681/s/work/?t=…   (可操作,1 小时后过期)
-⚠ 这个链接能在你的机器上执行任意命令
+http://box:7681/s/work/?t=…   (1 小时后过期)
+⚠ 拿到这个链接的人能在你的机器上执行任意命令
 ```
 
 - **detach 不需要命令** —— 关掉网页就是 detach,会话照跑;
 - `has` 只返回退出码,给脚本用:`tmuxd has -t work || tmuxd new -s work`;
-- `attach` 是**你自己看**(完整权限),`share` 是**给别人**(默认只读),
-  区别与理由见 [02 §4](02-session.md);
-- `ls` 里 `external` 那一列不是异常 —— 是你 ssh 进去手工开的会话,一等公民
-  ([02 §7](02-session.md));
-- `-F` 用 tmux 同款占位符:`#{session_name}` `#{session_windows}` `#{session_attached}`
+- `attach` 是**你自己看**,`share` 是**给别人**——区别不在权限(两者都是完整读写),
+  而在凭据:`share` 签的 token 只对这一个会话有效、会过期([02 §4](02-session.md));
+- **`ls` 里没有 window / pane 计数** —— 一个会话就是一个终端([02 §1](02-session.md));
+- `-F` 用 tmux 同款占位符:`#{session_name}` `#{session_attached}`
   `#{pane_current_command}` `#{session_uri}` `#{session_status}`。
 
 ## 4. 操作
@@ -117,7 +118,7 @@ $ tmuxd run -t work "git status --porcelain"
 exit 0  (84ms)
 
 $ tmuxd run -t work "make deploy"
-✗ not_a_shell: pane 里跑的是 vim
+✗ not_a_shell: 终端里跑的是 vim
   加 --force 强行发送,或改用 tmuxd send
 
 $ tmuxd stream -t work | tee session.log   # Ctrl-C 退出
@@ -138,7 +139,7 @@ tmuxd run -t work "make test" --exit-code || echo "测试挂了"
 不默认透传,是因为分不清"命令失败"和"调用失败"会让脚本写错 ——
 这两件事在远程执行里必须分开。
 
-## 5. 远端
+## 5. 实例与远端
 
 ```bash
 tmuxd -H https://box.internal:7681 ls
@@ -150,12 +151,16 @@ export TMUXD_TOKEN=…
 由那边执行。没有 `-H` 时优先走本机 unix socket(不需要 token),socket 不在则退到
 `127.0.0.1:7681` + token。
 
-socket 语义和 tmux 一致:
+`-L` / `-S` 换的是 **tmuxd 实例**,和 tmux 的写法一致:
 
 ```bash
-tmuxd -L ci ls              # 换一套互不可见的 tmuxd(自己的 socket + 自己的 tmux socket)
+tmuxd -L ci new -s build     # 另一套 tmuxd:自己的控制 socket、自己的端口、自己的 tmux 池
 tmuxd -S /tmp/x.sock ls
 ```
+
+**实例名同时决定它的 tmux socket**(`-L ci` → `tmux -L tmuxd-ci`),
+所以两套 tmuxd 的会话池互不可见,也都不碰你自己的 tmux —— 一个概念,不是两个
+([01 §2](01-server.md))。
 
 ## 6. 配置
 
@@ -163,7 +168,6 @@ tmuxd -S /tmp/x.sock ls
 
 ```conf
 set -g port          7681
-set -g tmux-socket   tmuxd
 set -g cols          120
 set -g rows          40
 set -g history-limit 10000
@@ -174,18 +178,24 @@ set -g attach-cmd    "firefox %u"     # %u = attach URL
 优先级:命令行参数 > 环境变量 > 配置文件 > 内置默认。
 配置项名字和 `TMUXD_*` 环境变量一一对应(`history-limit` ↔ `TMUXD_HISTORY_LIMIT`)。
 
+**这里没有 tmux socket 这一项** —— 它由实例名推导,不给单独配([01 §2](01-server.md))。
+唯一和 tmux 有关的配置是 `TMUXD_TMUX_BIN`(二进制在哪),而且平时不用设。
+
 ## 7. 和 tmux 故意不一样的地方
 
 除了 §1 的定位,还有几处刻意偏离,都记在这:
 
 | | tmux | tmuxd | 为什么 |
 | --- | --- | --- | --- |
-| 无 `-t` 又有多个会话 | 挑最近的 | **报错** | 往错的 pane 敲命令代价太大 |
+| 无 `-t` 又有多个会话 | 挑最近的 | **报错** | 往错的终端敲命令代价太大 |
 | `kill-server` | 杀 tmux server | **停门面,会话全活** | 门面和屋子分开;要杀真的得 `--tmux` |
 | `send-keys` | 一个命令,`-l` 区分 | 拆成 `send` / `keys` | 消掉"Enter 变回车"那个坑 |
 | `attach` | 占住你的终端 | **打开浏览器 / 打印 URL** | 它本来就是给外面用的 |
-| 前缀键 `C-b` | 有 | **无** | CLI 不劫持键盘;要前缀键就用 tmux 本体 |
+| `attach -r` 只读 | 有 | **无** | 这一层不分权限,锁在上层([02 §4](02-session.md)) |
+| window / pane 命令 | 一大堆 | **一条都没有** | 一个会话就是一个终端([02 §1](02-session.md)) |
+| 前缀键 `C-b` | 有 | **无** | CLI 不劫持键盘;要前缀键就 attach 进去用 tmux 本体 |
 | 会话名前缀匹配 | 支持 | **精确匹配**(`-t "=name"`) | `work` 匹配上 `workbench` 是真实事故 |
+| `-L` / `-S` | 换 tmux server | 换 **tmuxd 实例**(连带换它的 tmux socket) | 实例是一个概念,不是两个 |
 
 ## 8. 退出码
 
@@ -196,11 +206,11 @@ set -g attach-cmd    "firefox %u"     # %u = attach URL
 | 0 | 成功 |
 | 1 | 一般失败 |
 | 2 | 用法错误(参数不对) |
-| 3 | 会话 / window / pane 不存在(`has` 用这个) |
-| 4 | 状态不对(`not_a_shell` / `name_conflict` / `read_only`) |
+| 3 | 会话不存在(`has` 用这个) |
+| 4 | 状态不对(`not_a_shell` / `name_conflict` / `cmd_not_found`) |
 | 5 | 超时(`timeout`) |
 | 6 | 连不上 tmuxd(`unreachable` / `unauthorized`) |
-| 7 | 底下的 tmux server 没了(`tmux_gone`) |
+| 7 | tmuxd 的 tmux server 没了(`tmux_gone`) |
 
 4/5 可重试,6 检查配置,**7 该告警**。和 API 的错误二分一致([03 §7](03-io.md))。
 

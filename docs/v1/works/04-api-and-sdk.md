@@ -29,32 +29,35 @@ CLI([05](05-cli.md))同理 —— 三个壳,一个内核。
 `keys` 和 `run` 尤其要用。
 
 **并发**:
-- **同一个 pane 的 `run` 串行**(内部排队,不交错);
-- `keys` **不排队** —— 字符往 pane 里串行进去是 tmux 本来的行为,拦它反而不对;
+- **同一会话的 `run` 串行**(内部排队,不交错);
+- `keys` **不排队** —— 字符往终端里串行进去是 tmux 本来的行为,拦它反而不对;
 - 会话级操作(create/delete/rename)按会话名加锁。
 
-**无分页**:v1 所有列表(会话、window、pane)量级都是个位数到几十,不设计分页。
+锁的粒度只有会话一种,因为**会话就是终端**,没有更细的单位([02 §1](02-session.md))。
+
+**无分页**:v1 会话列表量级是个位数到几十,不设计分页。
+
+**权限**:只有一档,全部可读可写。没有只读 token、没有 `read_only` 错误码
+—— 要锁往上层去锁([02 §4](02-session.md))。
 
 ## 2. target 语法
 
-一条规则贯穿 API、SDK、CLI:
+一条规则贯穿 API、SDK、CLI,而且**只有两种形态**:
 
 ```
-work                    会话 work 的当前 window 的当前 pane
-work:1                  第 1 个 window
-work:1.2                第 1 个 window 的第 2 个 pane
-work:build              按 window 名
-%7                      pane id,直接寻址
+work                    会话名
 claude:///p?window=…    URI(见 02 §2),先规范化再派生会话名
 ```
 
-前四种是 tmux 原生写法,原样支持。**URL 里 target 出现在路径段时必须 URL-encode**
-(`work:1.2` → `work%3A1.2`),SDK 和 CLI 负责编码,调用方不用管。
+没有 `work:1`、没有 `work:1.2`、没有 `%7` —— tmux 那套 `session[:window[.pane]]`
+目标语法在这里不存在,因为 window 和 pane 不做([02 §1](02-session.md))。
+调用方只需要知道会话叫什么。
 
-省略 window/pane 时落在当前活动的那个 —— tmux 的规矩。
+**URI 出现在路径段时由 SDK / CLI 负责 URL-encode**,调用方不用管;
+`GET /api/attach` 走 query,天然安全。
 
 **没给 target 又有多个会话时:报错,不猜。** tmux 会挑最近的,tmuxd 不 ——
-往错误的 pane 里敲一条命令,代价比敲错终端大。
+往错误的终端里敲一条命令,代价比敲错终端大。
 
 ## 3. 端点总表
 
@@ -67,17 +70,16 @@ claude:///p?window=…    URI(见 02 §2),先规范化再派生会话名
 | `GET` | `/api/sessions/{t}` | 单个,含 `clients`、`current_command` |
 | `DELETE` | `/api/sessions/{t}` | `kill-session`,响应带被踢掉的 `clients` 数 |
 | `POST` | `/api/sessions/{t}/rename` | 改名(URI 派生的会话拒绝改名,`409`) |
-| `GET` | `/api/sessions/{t}/windows` | window 列表 |
-| `GET` | `/api/sessions/{t}/panes` | pane 列表(id / 尺寸 / `current_command` / cwd) |
-| `POST` | `/api/sessions/{t}/split` | 分屏(`-h` / `-v`),回新 pane id |
-| `DELETE` | `/api/sessions/{t}` `?window=` `?pane=` | `kill-window` / `kill-pane` |
+
+**会话是唯一的生命周期单位** —— 没有 `windows` / `panes` / `split` / `kill-pane`
+这些端点([02 §1](02-session.md))。创建、attach、销毁,三个动词到头。
 
 ### attach 与分享 —— 见 [02 §3-4](02-session.md)
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/attach?target=&mode=&create=` | **唯一 attach 入口**,无中生有 + `302 /tty/?arg=…` |
-| `POST` | `/api/sessions/{t}/share` | 签一次性 token,`{read_only=true, ttl_s=3600}` |
+| `GET` | `/api/attach?target=&create=` | **唯一 attach 入口**,无中生有 + `302 /tty/?arg=…` |
+| `POST` | `/api/sessions/{t}/share` | 签一次性 token,`{ttl_s=3600}`。**收窄的是范围和时效,不是读写** |
 | `GET` | `/s/{name}/` | 终端网页(内部就是跳 attach 端点) |
 
 ### I/O —— 见 [03](03-io.md)
@@ -131,7 +133,7 @@ WS /api/events
 | `session.exited` | 对账发现 tmux 里没了 |
 | `session.killed` | 显式 `DELETE` |
 | `session.renamed` | |
-| `pane.resized` | 尺寸变了,渲染方据此重排 |
+| `session.resized` | 尺寸变了,渲染方据此重排 |
 | `server.shutdown` | 门面要关了(**会话不受影响**,事件里写明) |
 
 事件是**通知,不是真相**:漏了一条不影响正确性,调用方任何时候都能 `GET /api/sessions` 重新对齐。
@@ -173,7 +175,7 @@ if r.exit_code != 0:
 
 t.resize(cols=200, rows=50)
 print(t.attach_url())                   # 自己看
-print(t.share(read_only=True, ttl=3600))# 给别人
+print(t.share(ttl=3600))                # 给别人:限这一个会话、限一小时,但能敲
 
 for chunk in t.stream():                # 原始字节,断线自动带 since 续
     sys.stdout.buffer.write(chunk)
@@ -187,7 +189,7 @@ t.kill()
   出问题时能直接把 SDK 调用翻译成 curl;
 - **`session()` 是无中生有,`open()` 是只接不建。** 两个动词分开,不用布尔参数,
   因为"我以为会接上结果开了个新的"是最难查的那类 bug;
-- **异常二分**:`SessionError`(`NoSuchSession` / `NotAShell` / `Timeout` / `ReadOnly`)
+- **异常二分**:`SessionError`(`NoSuchSession` / `NotAShell` / `Timeout` / `NameConflict`)
   是调用方能自愈的;`ServerError`(`TmuxGone` / `Unauthorized` / `Unreachable`)是环境出事了。
   和 [03 §7](03-io.md) 的错误码一一对应;
 - **异步同形**:`from tmuxd import AsyncServer`,方法名与参数完全一致,只是 `await`。
@@ -207,7 +209,7 @@ srv = Server("http://box:7681", token=T)
 for proj in projects:
     t = srv.session(uri=f"claude://{proj}?job={job_id}")   # 任意 query 都参与身份
     t.send(task_prompt, enter=True)
-    print(f"{proj}: {t.share(read_only=True)}")            # 把围观链接贴进工单
+    print(f"{proj}: {t.share()}")                          # 把链接贴进工单
 
 ...
 for proj in projects:
@@ -215,7 +217,7 @@ for proj in projects:
     print(t.capture(start=-200))                            # 看它干到哪了
 ```
 
-**人拿着那个只读链接,看到的和 `capture()` 读到的是同一个 pane。**
+**人点开那条链接看到的,和 `capture()` 读到的,是同一个终端 —— 而且他能直接接手敲。**
 这是 tmux 白送的性质,也是整套东西最值钱的地方。
 
 ## 6. 版本
