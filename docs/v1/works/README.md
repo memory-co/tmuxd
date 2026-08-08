@@ -151,7 +151,7 @@ tmux ls          # 你自己的会话,一个不多一个不少
 | [04-cli.md](04-cli.md) | 命令行,照 tmux 设计;以及它为什么不取代 tmux |
 | [05-consumers.md](05-consumers.md) | 谁该用它:shellbase 的迁移清单、与 webmuxd 的关系 |
 | [06-dependencies.md](06-dependencies.md) | 两个依赖两种态度:tmux 只探测,ttyd 自带兜底 |
-| [07-install.md](07-install.md) | `tmuxd install`:网络优先、自带兜底,装完记进 `~/.tmuxd.conf` |
+| [07-install.md](07-install.md) | `tmuxd install`(**辅助命令**):网络优先、自带兜底,两个二进制记进 `~/.tmuxd.json` |
 
 ## 明确不做
 

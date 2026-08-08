@@ -1,5 +1,12 @@
 # 07 · `tmuxd install`
 
+> **这是一条辅助命令,不是安装步骤。**
+> 环境就绪的机器 —— Linux 上装了平台 wheel、`tmux` 又在 PATH 上 —— **一次都不用敲它**,
+> `pip install tmuxd` 完就能 `Tmuxd(...)`。它存在,是为了给**不就绪**的那些机器一条出路。
+>
+> 所以它不进任何 Quick Start,不写成"第二步",`Tmuxd()` 也**不会**因为你没跑过它而报错。
+> 报错只发生在真的缺东西的时候,而那时的报错信息里会提到它。
+
 ## 1. 它补的是哪三处缺口
 
 [06](06-dependencies.md) 定下的是**运行时怎么找二进制**。找不到的时候怎么办,那份文档给的
@@ -77,65 +84,55 @@ ttyd   ⚠ 下载失败(连不上 github.com),改用包里自带的 1.7.7
 | **[06 §3](06-dependencies.md) 运行时查找** | 现在该跑哪个二进制 | 显式 → PATH → 自带 |
 | **本文 §3 安装来源** | `install` 该从哪弄一份来 | 网络 → 自带 |
 
-`install` 装完会把路径写进配置(§4),而配置属于**显式**那一级 —— 所以装过之后,
+`install` 装完会把路径记进 `~/.tmuxd.json`(§4),而它属于**显式**那一级 —— 所以装过之后,
 运行时就用装好的那份。两条顺序各管各的,合起来见 §6。
 
-## 4. 装完写到哪:`~/.tmuxd.conf`
+## 4. 装完写到哪:`~/.tmuxd.json`
 
-装完要记下来,否则下次还得重找。写进已有的那个配置文件,沿用 `set -g` 写法:
+装完要记下来,否则下次还得重找。**一个新文件,只有两个键:**
 
-```conf
-# ~/.tmuxd.conf
-set -g port          7681
-set -g control-port  7682
-
-# --- managed by tmuxd install (2026-08-08T12:00:00Z) ---
-set -g tmux-bin      /usr/bin/tmux
-set -g ttyd-bin      /home/me/.tmuxd/bin/ttyd
-# --- end managed ---
+```json
+{
+  "tmux": "/usr/bin/tmux",
+  "ttyd": "/home/me/.tmuxd/bin/ttyd"
+}
 ```
 
-### 4.1 只碰自己那两行
+没有 `port`,没有 `token`,没有版本号,没有时间戳。**里面只有"这两个程序在这台机器的哪儿"。**
 
-这是这一节最要紧的约束:**这个文件可能是人手写的**,里面有注释、有排版、有别的设置。
-所以 `install`:
+### 4.1 为什么不写进已有的 `~/.tmuxd.conf`
 
-- **只写 `tmux-bin` 和 `ttyd-bin` 两个键**,别的一个字不动;
-- 用一对 `--- managed by tmuxd install ---` 标记把它们围起来,**重复运行只替换块内**;
-- 文件不存在就新建;存在但没有那个块,就**追加**在末尾;
-- **永远不重排、不删注释、不"格式化"别人的文件。**
+那个文件是 **CLI 的配置**(`set -g port` / `control-port` / `token`,见
+[04 §9](04-cli.md)),而且**是人手写的** —— 有注释、有排版。机器要去改它,就得发明
+一套"只替换我这一块、不重排别人的行"的纪律,而那套纪律的每一条都是将来会踩的坑。
 
-> 更稳的做法本来是写一个单独的机器文件(比如 `~/.tmuxd/toolchain.json`),
-> 人写的和机器写的彻底分开。这里选了同一个文件,因为**一处配置比两处好找** ——
-> 代价就是上面那几条纪律,它们是硬要求,不是建议。
+分成两个文件,这些问题一次消失:
 
-### 4.2 `--print` 不写盘
+| | `~/.tmuxd.conf` | `~/.tmuxd.json` |
+| --- | --- | --- |
+| 谁写 | **人** | **`tmuxd install`** |
+| 写什么 | 行为(端口、token、默认值) | 机器事实(两个二进制在哪) |
+| 谁读 | 只有 CLI | **CLI 和库都读** |
+| 怎么改 | 你用编辑器 | 整个文件重写,不用保序 |
 
-有人不想让程序碰他的配置文件(dotfiles 进了 git 的人尤其)。所以:
+`install` **从不碰 `~/.tmuxd.conf`**。不想要 json 里那两条了?`rm ~/.tmuxd.json`,
+回到全靠 PATH 的状态 —— 一个能用 `rm` 撤销的东西,不需要再配一个 `--forget`。
 
-```console
-$ tmuxd install --print
-set -g tmux-bin      /usr/bin/tmux
-set -g ttyd-bin      /home/me/.tmuxd/bin/ttyd
+> 路径可以用 `TMUXD_JSON` 指到别处。理由和 `TMUXD_CONFIG` 一样:
+> 跑测试的时候不能让开发机上真实的那份掺进来。
+
+## 5. 谁读它:库默认就读
+
+用户要的是"下次不管 lib 还是 server 都自动读到"。**这个文件里只有机器事实,所以库读它是安全的:**
+
+```python
+Tmuxd(port=12345)          # 自动读 ~/.tmuxd.json;读不到就用系统上的
+Tmuxd(port=12345, tmux_bin="/opt/tmux")   # 显式传的永远赢
 ```
 
-自己贴到哪都行。**一个会改你 home 目录文件的命令,必须给出"只告诉我该写什么"的出口。**
-
-## 5. 谁读这个文件:库只读工具链那两个键
-
-用户要的是"下次不管 lib 还是 server 都自动读到"。但**让一个库去读用户 home 目录下的
-配置文件,是会出事的** —— 嵌进别人 Web 应用里的库,行为不该被一个它不知道的文件改变。
-
-所以划一条线:
-
-| 键 | CLI 读吗 | **库读吗** | 为什么 |
-| --- | --- | --- | --- |
-| `tmux-bin` / `ttyd-bin` | ✅ | **✅** | 这是**机器事实**——那两个程序在这台机器的哪儿。谁来问答案都一样 |
-| `port` / `control-port` / `bind` / `token` | ✅ | **❌** | 这是**行为**。嵌进别人应用里的实例,端口和 token 该由那个应用决定,不该被 home 里的文件改掉 |
-| `history-limit` / `state-dir` / `open-cmd` | ✅ | ❌ | 同上 |
-
-**机器事实可以从配置来,行为必须从调用方来。** 这条线让"install 之后自动生效"成立,
-又不至于让 `Tmuxd(port=8080)` 的行为取决于某个人的 dotfile。
+这条能成立,正是因为 §4 把范围砍到了两个键。**机器事实可以从文件来,行为必须从调用方来** ——
+如果这个 json 里还有 `port`,那么 `Tmuxd(port=12345)` 起在哪个口就取决于某人 home
+目录下的一个文件,那是不能接受的。所以这个文件**永远不会长出第三个键**。
 
 ## 6. 合起来的完整顺序
 
@@ -145,22 +142,30 @@ set -g ttyd-bin      /home/me/.tmuxd/bin/ttyd
 tmux                                    ttyd
 ① Tmuxd(tmux_bin=…)                     ① Tmuxd(ttyd_bin=…)
 ② TMUXD_TMUX_BIN                        ② TMUXD_TTYD_BIN
-③ ~/.tmuxd.conf 的 tmux-bin  ← install  ③ ~/.tmuxd.conf 的 ttyd-bin  ← install 写的
+③ ~/.tmuxd.json 的 tmux   ← install 写的 ③ ~/.tmuxd.json 的 ttyd   ← install 写的
 ④ PATH                                   ④ PATH
 ⑤ 没有 → TmuxMissing(给安装命令)        ⑤ 包里自带的
                                          ⑥ 没有 → TtydMissing
 ```
 
-**配置排在 PATH 前面**,因为它是显式的:你跑过 `install`,就是表达了"用这一份"。
-不想要就删掉那两行,或者 `tmuxd install --forget`。
+**json 排在 PATH 前面**,因为它是显式的:你跑过 `install`,就是表达了"用这一份"。
+不想要就 `rm ~/.tmuxd.json`,顺序自动退回从 ④ 开始 —— 也就是**没跑过 install 的那台机器**。
 
-每一级都要过**同一套合格性检查**(tmux ≥ 3.0、ttyd ≥ 1.6)。配置里记的路径失效了
-(二进制被删、被升级搬走)不该直接炸,而是**当作没配**继续往下找,并提示一次:
+### 6.1 `Tmuxd()` 每次构造都会再验一遍
+
+json 里记的是**上一次**的事实,而事实会过期:二进制被删、被 `apt upgrade` 搬走、
+`~/.tmuxd/bin` 被清理掉。所以读到路径**不等于**就用它 —— 每一级取到的候选,
+都要过和现在一样的那套合格性检查(tmux ≥ 3.0、ttyd ≥ 1.6,见 [06 §3.2](06-dependencies.md))。
+
+**没过就当作没配,继续往下找**,并且说一声:
 
 ```console
 $ tmuxd ls
-⚠ ~/.tmuxd.conf 里的 ttyd-bin 已经不在了,改用 PATH 上的;tmuxd install 可以修好
+⚠ ~/.tmuxd.json 记的 ttyd 已经不在了,改用 PATH 上的;tmuxd install 可以修好
 ```
+
+这是这个设计里唯一一处"文件说的话可能是假的",所以处理方式必须是**降级而不是报错** ——
+一个陈旧的缓存文件,不该让本来能跑的机器跑不起来。
 
 ## 7. 版本检查是这条命令的一半
 
@@ -170,7 +175,7 @@ $ tmuxd ls
 $ tmuxd install
 tmux   ✓ 3.3a          /usr/bin/tmux              (需要 ≥ 3.0)
 ttyd   ✓ 1.7.7         ~/.tmuxd/bin/ttyd          (需要 ≥ 1.6)
-写入   ~/.tmuxd.conf   tmux-bin / ttyd-bin
+写入   ~/.tmuxd.json
 
 $ tmuxd install        # 已经装好、也已经记下来的时候
 tmux   ✓ 3.3a          /usr/bin/tmux
@@ -243,25 +248,26 @@ ttyd 太旧**降级**到自带的或重新下载。
 
 ## 10. 不做什么
 
+- ❌ **变成必跑的一步** —— 环境就绪就不用敲它,`Tmuxd()` 不检查你跑没跑过(开头那段);
 - ❌ **代跑 `sudo`** —— 非 root 时只给命令(§2);
 - ❌ **下载或编译 tmux** —— 三条代价见 [06 §2](06-dependencies.md),这条命令不改变它;
 - ❌ **`--force` 跳过校验和**(§9);
 - ❌ **默认自动下载** —— 只在你敲了这条命令时才发生(§8);
-- ❌ **装的时候顺便改别的配置** —— 只碰 `tmux-bin` / `ttyd-bin` 两个键(§4.1);
-- ❌ **让库读配置里的行为类键** —— 只读工具链那两个(§5);
+- ❌ **碰 `~/.tmuxd.conf`** —— 那是人写的 CLI 配置,机器只写自己的 json(§4.1);
+- ❌ **给 json 加第三个键** —— 端口、token 这些是行为,只能从调用方来(§5);
 - ❌ **自动更新** —— 没有后台检查、没有"发现新版本"提示。要换就自己 `--refresh`。
 
 ## 11. 影响清单
 
 | 改哪 | 改什么 |
 | --- | --- |
-| `tmuxd/install.py`(新) | 体检、下载+校验、写配置块;`tmux` 的包管理器探测 |
-| `tmuxd/cli.py` | 新增 `install` 子命令(`--refresh` / `--print` / `--forget` / `--ttyd-version` / `--tmux-bin` / `--ttyd-bin`) |
-| `tmuxd/config.py`(新) | `set -g` 的读与**保序改写**,CLI 和库共用 |
-| `tmuxd/core.py` | 查找顺序插入"配置"一级(§6);路径失效时降级并提示 |
-| `tmuxd/tmux.py` | `find_binary` 接受配置来的路径;`TmuxMissing` 带上按发行版的安装命令 |
-| `tests/installing/`(新场景) | 网络优先与降级、校验和不符不装、配置块只碰两行、失效路径降级、幂等 |
+| `tmuxd/install.py`(新) | 体检、下载+校验、写 json;`tmux` 的包管理器探测 |
+| `tmuxd/cli.py` | 新增 `install` 子命令(`--refresh` / `--ttyd-version` / `--tmux-bin` / `--ttyd-bin`) |
+| `tmuxd/toolchain.py`(新) | 读写 `~/.tmuxd.json` 这两个键,库和 CLI 共用;`TMUXD_JSON` 可改路径 |
+| `tmuxd/core.py` | 查找顺序插入 json 一级(§6);每次构造复验,失效则降级并提示一次 |
+| `tmuxd/tmux.py` | `find_binary` 接受 json 来的路径;`TmuxMissing` 带上按发行版的安装命令 |
+| `tests/installing/`(新场景) | 网络优先与降级、校验和不符不装、json 只有两个键、失效路径降级、幂等、**没有 json 时行为不变** |
 | `tests/nothing_reads/` | 命令集从 13 条变 14 条 |
 | `docs/v1/cli/install.md`(新) | 使用文档 |
 | [`06 §7`](06-dependencies.md) | 那条"不做"改写成 §8 的措辞 |
-| `README` × 2 | 依赖那节提一句:冷门架构或想要最新版就 `tmuxd install` |
+| `README` × 2 | 依赖那节提一句:冷门架构或想要最新版才需要 `tmuxd install`;不进 Quick Start |
