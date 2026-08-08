@@ -48,7 +48,10 @@ tmuxd = "tmuxd.cli:main"
 # hold ttyd or session state, so it talks to `tmuxd serve` over the control
 # port. Embedding the library needs none of this, which is why it is an extra.
 server = ["fastapi>=0.110", "uvicorn>=0.27"]
-dev = ["pytest>=7", "fastapi>=0.110", "uvicorn>=0.27"]
+# httpx is not ours -- starlette's TestClient imports it, and without it
+# every control_api test fails on a clean machine. It was invisible here
+# because a laptop usually already has it; CI is the machine that does not.
+dev = ["pytest>=7", "fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27"]
 
 [tool.setuptools]
 packages = ["tmuxd"]

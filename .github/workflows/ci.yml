@@ -20,9 +20,9 @@ jobs:
       matrix:
         python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -46,8 +46,8 @@ jobs:
   bundled-fallback:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -59,9 +59,15 @@ jobs:
           python -m venv /tmp/v
           /tmp/v/bin/pip install dist/*manylinux_2_17_x86_64*.whl
           ! command -v ttyd || { echo "ttyd unexpectedly on PATH"; exit 1; }
+          # Run from somewhere else. With the repo as cwd, `import tmuxd` picks
+          # up the source tree instead of the wheel -- and the source tree
+          # carries no binary, so this job was testing the wrong thing.
+          cd /tmp
           /tmp/v/bin/python - <<'PY'
           import socket
+          import tmuxd
           from tmuxd import Tmuxd
+          assert "/tmp/v/" in tmuxd.__file__, "imported the source tree: " + tmuxd.__file__
           s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close()
           t = Tmuxd(port=p, token="x", socket="ci", state_dir="/tmp/ci-state")
           assert t.info()["ttyd"]["source"] == "bundled", t.info()["ttyd"]
@@ -73,7 +79,7 @@ jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Every relative link in the docs resolves
         run: |
           fail=0
