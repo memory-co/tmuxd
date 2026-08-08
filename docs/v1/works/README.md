@@ -1,29 +1,54 @@
 # tmuxd
 
-**tmuxd = tmux 的 server,长出一个 HTTP 口。**
+**tmuxd = 一个 Python 库,把 tmux 和 ttyd 拼成"活得比连接久、还能被程序往里敲的终端"。**
 
 `ttyd tmux new -A -s work` 这条命令,大家都写过。它把两个东西拼在一起:tmux 负责会话活着,
 ttyd 负责让你在浏览器里看见。拼是拼上了,但拼出来的东西**没有把手**——
 会话是谁开的、开在哪个目录、还活着没有,一概问不到;想从外面往里投喂一条指令,
 只能 ssh 进去敲 `tmux send-keys`。
 
-tmuxd 就是把这条命令做成一个服务:**会话由 API 管,能被程序往里敲。**
+tmuxd 把这条命令做成一个**你 import 进来的东西**:
 
-| 来自 | 能力 | 在 tmuxd 里 |
-| --- | --- | --- |
-| **tmux** | 一个 shell 活得比连接久,且能被多个客户端同时看见 | 不复刻,**直接用真的 tmux**(专属 socket) |
-| **ttyd** | 暴露成网页,能看、能操作、能分享链接 | `/s/<id>/` |
-| **tmuxd 自己加的** | 会话生命周期 API + `send-keys` + SDK | `/api/sessions`、`/api/attach`、`/api/…/keys` |
+```python
+from tmuxd import Tmuxd
+
+t = Tmuxd(port=12345, token="changeme")   # ← 这行之后:ttyd 起来了,tmux 还没有
+s = t.session(id="id5", cwd="/home/me/proj", cmd="claude")
+s.send("把测试跑一遍", enter=True)
+print(s.url)                              # http://localhost:12345/?arg=id5
+```
+
+四行。第四行那个 URL 发给谁,谁在浏览器里就进了这个终端 —— 看得见,也能直接接手敲。
+
+## 核心是库,不是服务
+
+**不是"先有服务再配个 SDK",而是"先有库,需要的时候把它暴露出去"。**
+
+```
+        ┌── 你的 Python 程序   import tmuxd        ← 最短的一条,大多数人到这里就够了
+        │
+tmuxd ──┼── CLI               tmuxd new / send    ← 同一个库,套了个命令行
+ (库)   │
+        └── HTTP(可选)       POST /sessions/…    ← 同一个库,套了个 HTTP 口
+                                                     给别的语言、别的机器用
+```
+
+大多数调用方(编排程序、Web 后端、脚本)本来就和它在同一个进程里。
+让它们绕一圈 HTTP 去调自己进程里就能做的事,是白交的税 —— 所以 **HTTP 默认不开**
+([03 §1](03-http.md))。
 
 ## 会话模型小到一句话
 
 > **一个 id、一个启动目录、一条启动命令。** 没有第四个字段。
 
-```jsonc
-POST /api/sessions   { "id": "work", "cwd": "/home/me/proj", "cmd": "npm run dev" }
+```python
+s = t.session(id="id5", cwd="/home/me/proj", cmd="claude")
 ```
 
-## 四条收窄
+语义就是 `tmux new-session -A`:有则接上,无则创建。id 是**调用方给的**,
+因为只有调用方知道"同一个东西"指的是什么([02 §2](02-session.md))。
+
+## 五条收窄
 
 这份设计是**一路减出来的**,减掉的每一样都比留下的更能说明它是什么。
 
@@ -32,88 +57,76 @@ tmuxd 只借 tmux 的一件事:让 shell 活得比连接久、能被多人同时
 要多个终端就多开几个会话 —— 这本来就是调用方在做的事([02 §1](02-session.md))。
 
 **② 不读,只写。** 没有 `capture`、没有 `run`、没有输出流、没有录制、没有事件流。
-读终端内容这件事要么归**人**(attach 进去看,ttyd 已经做完了),要么归 **ssh**
-(程序化拿输出和退出码,那条路本来就更直)。tmuxd 只留一个写入动作:
-往会话里 `send-keys`([03 §1](03-api-and-sdk.md))。
+读终端内容这件事要么归**人**(打开那个 URL 看,ttyd 已经做完了),要么归 **ssh**
+(程序化拿输出和退出码,那条路本来就更直)。只留一个写入动作:往会话里敲
+([03 §2](03-http.md))。
 
-**③ 全部可读可写,不做权限。** 没有只读 attach,没有只读分享链接。
-拿到 token 就是拿到这台机器的 shell,在这一层做只读只是**假的安全感**。
+**③ 全部可读可写,不做权限。** 没有只读 attach,没有只读链接,也没有 `share`。
+ttyd 的鉴权是进程级的,在这一层做"只读"只是**假的安全感**。
 真要区分谁能看谁能写,那需要身份系统,**往上层去锁**([02 §4](02-session.md))。
 
-**④ 会话池是专属的,不碰你自己的 tmux。** tmuxd 对 tmux 的全部依赖是"二进制在哪",
-然后一律 `tmux -L tmuxd` 开一套独立 server。你的 `tmux ls` 和它的 `tmuxd ls`
+**④ 会话池是专属的,不碰你自己的 tmux。** 对 tmux 的全部依赖是"二进制在哪",
+然后一律 `tmux -L tmuxd` 开一套独立 server。你的 `tmux ls` 和它的 `t.sessions()`
 两份清单永不相交 —— 既让 tmuxd 能对自己那批会话全权负责,更让它**没有能力**
-动你那些跑了三天的工作会话([01 §2.1](01-server.md))。
+动你那些跑了三天的工作会话([01 §4](01-library.md))。
 
-还有一样也减掉了:**寻址协议。** 早先的稿子把 shellbase 的
-`claude:///proj?window=main&block=2` 那套 URI 身份搬了下来,现在还回去了 ——
+**⑤ 没有自己发明的路径。** 进终端的地址就是 ttyd 原生的 `?arg=<id>` ——
+不做反向代理、不做 `/s/<id>/`、不做 302 跳转([02 §3](02-session.md))。
+早先那套 `claude:///proj?window=main&block=2` 的 URI 寻址也还给 shellbase 了:
 **调用方自己算出一个 id,tmuxd 只认 id**([02 §2.2](02-session.md))。
-一个下层为了一个上层的方言长四个概念,是这类分层最典型的烂掉方式。
 
 减到最后剩下的是一句话:**让会话活着,让人看见,让程序往里敲。**
 
-## 一条硬承诺:tmuxd 不是黑盒
+## 两条不对称,这东西的全部价值
 
-tmuxd 的 session **就是** tmux 的 session,不是什么私有格式。
-tmuxd 不发明会话模型、不发明持久化、不发明协议 —— 它只是给一个 tmux server
-配了一个 HTTP 门面。**门面挂了,屋子还在**(见 [01 §4](01-server.md))。
+**① 门面短命,屋子长命。**
 
-排障时你当然可以 `tmux -L tmuxd ls` 进去看一眼。但那是**逃生舱,不是用法**:
-正常路径下你不该需要它,更不该在那个 socket 里手工开会话。
+```python
+with Tmuxd(port=12345) as t:
+    t.session(id="job-1", cwd="/srv/app", cmd="./deploy.sh")
+# 这里 ttyd 没了(它是你进程的子进程),job-1 还在跑(tmux server 不归任何人)
+```
+
+你可以写一个只跑三秒的脚本,派完活就退出,而它派下去的会话还在跑
+([01 §3](01-library.md))。
+
+**② 人和程序敲的是同一个终端。**
+`s.send(...)` 打进去的和有人在网页里敲进去的,进的是同一个 pane。
+这不是我们做的功能,是 tmux 白送的([02 §5](02-session.md))——
+也正因为白送,才值得整个设计围着它转。
 
 ## tmux / ttyd 对照
 
 | tmux / ttyd | tmuxd |
 | --- | --- |
-| tmux server | 底下**就是**一个 tmux server(专属,默认 `-L tmuxd`) |
+| tmux server | 底下**就是**一个 tmux server(专属 `-L tmuxd`,**懒起**) |
 | tmux session | session,**一个会话 = 一个终端** |
 | tmux window / pane | — **不做**,见 [02 §1](02-session.md) |
-| `tmux new -s work` | `POST /api/sessions` · `tmuxd new -s work` |
-| `tmux new-session -A` | `GET /api/attach?id=work`(无中生有) |
-| `tmux attach -t work` | 浏览器打开 `/s/work/` |
+| `tmux new -s work` | `t.session(id="work", cwd=…, cmd=…)` |
+| `tmux new-session -A` | 同上 —— 就是这个语义 |
+| `tmux attach -t work` | 浏览器打开 `s.url` |
 | detach(`C-b d`) | 关掉网页 |
 | `tmux attach -r` | — **不做**,一律可写 |
-| `tmux ls` | `GET /api/sessions` · `tmuxd ls` |
+| `tmux ls` | `t.sessions()` |
 | 会话名 | `id` —— 调用方给,tmuxd 不解释([02 §2](02-session.md)) |
-| `tmux send-keys` | `POST /api/sessions/{id}/keys` —— **唯一的写入动作** |
-| `tmux capture-pane` | — **不做**,要看就 attach,要抓输出用 ssh |
+| `tmux send-keys -l` | `s.send(text, enter=True)` |
+| `tmux send-keys` | `s.send_key("C-c")` —— **写入动作只有这两个** |
+| `tmux capture-pane` | — **不做**,要看就打开 URL,要抓输出用 ssh |
 | `tmux pipe-pane` | — **不做** |
 | scrollback / `history-limit` | 人在网页里往回滚,tmux 自己的事 |
-| `tmux kill-session` | `DELETE /api/sessions/{id}` |
-| `-L name` / `-S path` | 换 **tmuxd 实例**,连带换它的 tmux socket(一个概念,不是两个) |
-| **ttyd** `-p PORT` | `:7681`(**站在 ttyd 原来的位置上**) |
+| `tmux kill-session` | `s.kill()` |
+| `-L name` / `-S path` | `Tmuxd(socket="ci")` —— 换实例,连带换 tmux socket |
+| **ttyd** `-p PORT` | `Tmuxd(port=12345)` |
+| **ttyd** `-a` URL 传参 | **原样用**:`?arg=<id>` 就是 attach 入口 |
+| **ttyd** `-c user:pass` | `Tmuxd(token=…)` —— 进程级鉴权([01 §7](01-library.md)) |
 | **ttyd** 默认只读,`-W` 才可写 | 一律 `-W`,权限交给上层 |
-| **ttyd** `-b base-path` | `/s/<id>/` |
-| **ttyd** `-a` URL 传参 | `attach` 端点的 `id` |
 
-**没有多出来的概念。** 一张表看完,tmuxd 就是"tmux 的一个子集,加一个 HTTP 口"。
+**没有多出来的概念。** 一张表看完,tmuxd 就是"tmux 的一个子集,加一个 ttyd,加几行胶水"。
 
-## 60 秒上手
-
-```bash
-pip install tmuxd
-tmuxd start                        # 起 daemon,打印 token 和 URL
-tmuxd new -s work -c ~/proj
-open http://localhost:7681/s/work/ # 浏览器里就是终端
-```
-
-```python
-from tmuxd import Server
-
-t = Server("http://localhost:7681", token="...").session("work")
-
-t.send("npm test", enter=True)     # 往里敲,就这一个动作
-print(t.share())                   # 限这个会话、限一小时的链接,发给同事接手
-```
-
-程序把活派下去,人点开链接看着它跑,卡住了自己接管敲两下。
-**人和程序敲的是同一个终端** —— 这是 tmux 白送的,不是我们做的。
-
-### 它跑起来之后,你的 tmux 什么都没变
+## 它跑起来之后,你的 tmux 什么都没变
 
 ```bash
 tmux ls          # 你自己的会话,一个不多一个不少
-tmuxd ls         # tmuxd 的会话池,另一套,互不相干
 ```
 
 一句话的价值主张:**给一台机器加一个终端服务口,而不动这台机器上原有的任何东西。**
@@ -122,34 +135,35 @@ tmuxd ls         # tmuxd 的会话池,另一套,互不相干
 
 | 文件 | 内容 |
 | --- | --- |
-| [01-server.md](01-server.md) | 进程模型、专属 socket、部署形态、状态存哪、崩了怎么办 |
-| [02-session.md](02-session.md) | 一个会话一个终端、身份就是 id、attach、分享、对账回收 |
-| [03-api-and-sdk.md](03-api-and-sdk.md) | 为什么不读、端点总表、`keys`、错误码、Python SDK |
+| [01-library.md](01-library.md) | `Tmuxd` 对象、进程模型、专属 socket、状态、鉴权、构造参数 |
+| [02-session.md](02-session.md) | 一个会话一个终端、身份就是 id、URL、多客户端、生命周期、对账 |
+| [03-http.md](03-http.md) | 可选的 HTTP 壳:为什么默认不开、端点表、往里敲、错误码 |
 | [04-cli.md](04-cli.md) | 命令行,照 tmux 设计;以及它为什么不取代 tmux |
 | [05-consumers.md](05-consumers.md) | 谁该用它:shellbase 的迁移清单、与 webmuxd 的关系 |
 
 ## 明确不做
 
 保持它是个工具,不是平台。判断新功能该不该加,问一句:**tmux 会做这个吗?** 不会就别加。
-而且还要再问一句:**这件事非得在这一层做吗?** 能往上放、能交给 ssh 的,就别自己扛。
+而且还要再问一句:**这件事非得在这一层做吗?** 能往上放、能交给 ssh、能交给 ttyd 的,就别自己扛。
 
-- ❌ **读终端内容**(capture / run / 输出流 / 录制)—— 归人或归 ssh([03 §1](03-api-and-sdk.md))
-- ❌ **事件流** —— 没人会盯着一个 tmux 的事件;要状态就 `GET /api/sessions`([03 §7](03-api-and-sdk.md))
+- ❌ **读终端内容**(capture / run / 输出流 / 录制)—— 归人或归 ssh([03 §2](03-http.md))
+- ❌ **事件流** —— 没人会盯着一个 tmux 的事件;要状态就 `t.sessions()`([03 §7](03-http.md))
 - ❌ **window / pane** —— tmux 在这里只当共享 terminal 用,多路复用那部分不要([02 §1](02-session.md))
-- ❌ **只读 / 权限分级 / 谁能写谁不能写** —— 这一层全部可读可写,锁在上层([02 §4](02-session.md))
-- ❌ **接管用户已有的 tmux** —— 只探测二进制,一律 `-L` 开专属池([01 §2.1](01-server.md))
+- ❌ **只读 / 权限分级 / `share` 链接** —— 这一层全部可读可写,锁在上层([02 §4](02-session.md))
+- ❌ **接管用户已有的 tmux** —— 只探测二进制,一律 `-L` 开专属池([01 §4](01-library.md))
 - ❌ **URI / 寻址协议** —— 调用方自己算 id,那层方言留在懂它的地方([02 §2.2](02-session.md))
+- ❌ **反向代理 / 自己发明的 URL 路径** —— 用 ttyd 原生的 `?arg=`([02 §3](02-session.md))
 - ❌ **自研终端渲染** —— 网页那半是 ttyd 的活,不重写
-- ❌ **布局 / 分屏 UI** —— 网页上的画布是 [shellbase](05-consumers.md) 的事
-- ❌ **多租户 / RBAC / 配额** —— 拿到 token 即拥有这台机器的 shell,边界靠网络和容器
+- ❌ **多租户 / RBAC / 配额** —— 拿到凭据即拥有这批会话,边界靠网络和容器
 - ❌ **数据库** —— 状态是几个小 JSON,真相在 `tmux ls` 里
-- ❌ **跨机器编排 / 会话池 / 调度** —— 要多机就多台机器各跑一个 tmuxd
+- ❌ **跨机器编排 / 会话池 / 调度** —— 要多机就多台机器各跑一个
 
 ## 里程碑
 
 | 阶段 | 内容 | 验收标准 |
 | --- | --- | --- |
-| **M1 门面** | daemon(FastAPI + 子进程 ttyd)+ 会话 CRUD + `/s/<id>/` attach + token 鉴权 | `tmuxd new` 后浏览器里能用终端;`tmuxd` 重启,会话无损 |
-| **M2 写入 + CLI** | `keys` 端点(`text` / `keys` 两种形态)+ CLI 全套 + 错误码 | 脚本能开会话、往里投喂、把链接交出去 |
-| **M3 SDK + 远端** | Python SDK(同步 + 异步)、`-H`、`share` 一次性 token | `pip install tmuxd` 后能远程驱动另一台机器的会话 |
-| **M4 收编** | 对账与 GC、shellbase 切过来 | shellbase 删掉 `attach.sh` 与本地终端注册表,功能不回退 |
+| **M1 库** | `Tmuxd` / `Session` 两个类、ttyd 生命周期与复用、专属 socket、state 与对账 | 四行代码起一个会话并拿到能用的 URL;`kill -9` 掉进程,会话无损 |
+| **M2 写入** | `send` / `send_key`、异常体系、tmux server 懒起的空列表处理 | 脚本能开会话、往里投喂、把 URL 交出去 |
+| **M3 CLI** | 命令行壳(同一个库)、配置文件、退出码 | 不写 Python 也能用全部能力 |
+| **M4 HTTP** | 可选的 HTTP 壳 + `RemoteTmuxd` 客户端 | 别的语言、别的机器能驱动同一批会话 |
+| **M5 收编** | shellbase 切过来 | shellbase 删掉 `attach.sh`、ttyd 守护与本地终端注册表,功能不回退 |
