@@ -107,24 +107,38 @@ def test_new_creates_and_prints_the_entrance(run, capsys):
     assert "work" in text and ("?arg=work" in text) and ttyd_port in text
 
 
-def test_id_has_one_canonical_name_and_three_aliases(run, capsys):
-    """`-s` 回答"哪一个",`--id` 回答"按什么认" —— 两半都要。
-
-    -t / --session / --target 是 1.0.0 的拼法,不设移除期限 —— 留着的成本是
-    一行 argparse,删掉的成本是别人的脚本(works/04-cli.md §3.1)。
-    """
-    for flag in ("-s", "--id", "-t", "--session", "--target"):
+def test_a_session_is_named_one_way(run, capsys):
+    """`-s` 回答"哪一个",`--id` 回答"按什么认" —— 两半都要,但只有这两半。"""
+    for flag in ("-s", "--id"):
         assert run("new", flag, "same-%s" % flag.strip("-"), "--", "cat") == 0
     capsys.readouterr()
 
     assert run("--json", "ls") == 0
     ids = {item["id"] for item in json.loads(out(capsys))}
-    assert ids == {"same-t", "same-id", "same-s", "same-session", "same-target"}
+    assert ids == {"same-s", "same-id"}
 
 
-def test_the_aliases_stay_out_of_help(bare):
-    """规范写法要显眼,旧拼法不该继续教给新人 —— `-t` 尤其不该:
-    那个字母在 tmux 里绑着 target 那套语法,而这一层没有。"""
+def test_help_and_version_still_exit_zero(bare):
+    """argparse 用 SystemExit 表达这两件事,而它们不是错误。
+
+    main() 契约是返回退出码,所以它得把 SystemExit 接住 —— 接住的时候
+    很容易顺手把 0 也当成失败,这条就是防那个。
+    """
+    assert bare("--version") == cli.EXIT_OK
+    assert bare("--help") == cli.EXIT_OK
+
+
+@pytest.mark.parametrize("gone", ["-t", "--session", "--target"])
+def test_the_old_spellings_are_gone_not_hidden(bare, gone):
+    """2.0 是有意破坏兼容的(CHANGELOG.md)。
+
+    留一个 --help 和文档里都查不到的别名,是个没人找得到的承诺 —— 不如不留。
+    """
+    assert bare("new", gone, "x") == cli.EXIT_USAGE
+
+
+def test_help_shows_only_the_one_spelling(bare):
+    """`-t` 尤其不该出现:那个字母在 tmux 里绑着 target 那套语法,而这一层没有。"""
     from tmuxd.cli import build_parser
 
     sub = [a for a in build_parser()._actions if getattr(a, "choices", None)][0]

@@ -79,8 +79,9 @@ tmux 那套 `session:window.pane` 目标语法在这里不存在([设计理由](
 | `send -t work` | `send -s work` |
 | `send --target work` | `send --id work` |
 
-**`-t` / `--session` / `--target` 全部继续可用,不设移除期限**,只是**任何地方都不再出现**
-—— 不在 `--help` 里,也不在文档里。已经写好的脚本不用改。
+**`-t` / `--session` / `--target` 在 2.0 删掉了**,没有隐藏别名 ——
+现在用它们是明确的用法错误,而不是悄悄还能用。
+整版的破坏性改动见 [CHANGELOG](../../../CHANGELOG.md)。
 
 ## 全局选项
 

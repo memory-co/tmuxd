@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tmuxd"
-version = "1.0.0"
+dynamic = ["version"]        # 单一来源:tmuxd/__init__.py
 description = "tmux + ttyd as a Python library: terminals that outlive the connection, that a program can type into and a person can open in a browser"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -52,6 +52,9 @@ dev = ["pytest>=7", "fastapi>=0.110", "uvicorn>=0.27"]
 
 [tool.setuptools]
 packages = ["tmuxd"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tmuxd.__version__" }
 
 [tool.setuptools.package-data]
 tmuxd = ["data/*"]

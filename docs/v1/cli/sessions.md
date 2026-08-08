@@ -7,7 +7,7 @@
 `--id` 回答"按什么认"(和库、API、webmuxd 同名)。
 **只收一个 id,没有 `session:window.pane` 那套语法。**
 
-`-t` / `--session` / `--target` 是 1.0.0 的拼法,仍然可用,只是任何地方都不再出现。
+`-t` / `--session` / `--target` 是 1.0.0 的拼法,**2.0 已经删掉**([CHANGELOG](../../../CHANGELOG.md))。
 
 ---
 

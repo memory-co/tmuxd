@@ -39,3 +39,4 @@ tmuxd url -t work
 | [`docs/v1/sdk`](docs/v1/sdk/) | **Python SDK** —— `Tmuxd`、`Session`、异常、`RemoteTmuxd` |
 | [`docs/v1/cli`](docs/v1/cli/) | **命令行** —— 十三条命令、退出码、配置 |
 | [`docs/v1/works`](docs/v1/works/) | **设计稿** —— 为什么减成这样 |
+| [`CHANGELOG.md`](CHANGELOG.md) | **2.0 是破坏性的** —— 改了什么、怎么迁 |

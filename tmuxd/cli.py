@@ -528,15 +528,16 @@ def add_id(parser, *, required=True):
     session object calls it that too, so the long name is the one that
     survives being translated between layers (works/04-cli.md §3.1).
 
-    ``-t`` / ``--session`` / ``--target`` are 1.0.0's spellings. They keep
-    working forever but appear nowhere -- not in --help, not in the docs.
-    Requiredness is checked in main() because argparse only enforces it on
-    one action per dest.
+    1.0.0 spelled this ``-t`` / ``--target`` on most commands and ``-s`` on
+    ``new``. 2.0 has one spelling and no hidden aliases: an alias that appears
+    in neither --help nor the docs is a promise nobody can find, and this is
+    a deliberately breaking release (CHANGELOG.md).
+
+    Requiredness is checked in main() rather than by argparse, so the message
+    can name the flag instead of printing a usage block.
     """
     parser.add_argument("-s", "--id", dest="id", metavar="ID",
                         help="session id" + ("" if required else " (generated when omitted)"))
-    parser.add_argument("-t", "--session", "--target", dest="id",
-                        help=argparse.SUPPRESS)
     parser.set_defaults(_needs_id=required)
     return parser
 
@@ -604,7 +605,16 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    # argparse raises SystemExit on a usage error. main() is documented to
+    # *return* an exit code -- __main__ does sys.exit(main()) -- so catch it
+    # here rather than letting an embedder get an exception out of a function
+    # that promised an int.
+    try:
+        args = build_parser().parse_args(argv)
+    except SystemExit as exc:
+        # --help / --version raise SystemExit(0); a usage error raises 2.
+        # Pass the code through -- do not "helpfully" turn 0 into a failure.
+        return EXIT_OK if exc.code is None else int(exc.code)
     if getattr(args, "_needs_id", False) and not args.id:
         return _fail("%s needs a session: -s ID (or --id ID)" % args.command,
                      EXIT_USAGE)
