@@ -123,10 +123,13 @@ ttyd 在这套里只干一件事:把连接 exec 到 `attach.sh`。**它不持有
 **tmuxd 对 tmux 的全部依赖,就是知道二进制在哪。**
 
 ```
-第一次要用 tmux 时才做两件事:
+构造时只做两件事,都不启动任何 tmux 进程:
   which tmux          →  Tmuxd(tmux_bin=…) 可覆盖,默认取 PATH
   tmux -V             →  低于 3.0 直接报错(要用 `window-size`,tmux 2.9 才有)
 ```
+
+`tmux -V` 不会拉起 server,所以"构造时检查"和"§4.1 server 懒起"并不矛盾 ——
+早点失败比等到有人打开浏览器才失败好。
 
 **不去发现已有的 tmux server,不去接管用户正在用的会话,不读 `~/.tmux.conf`**
 (用 `-f` 指向随包配置)。
@@ -260,6 +263,8 @@ ttyd -p 12345 -a -W -c tmuxd:<token> /opt/tmuxd/bin/attach.sh
 | `ttyd_bin` | PATH 里的 `ttyd` | 同理 |
 | `state_dir` | `~/.tmuxd` | 状态目录 |
 | `gc_ttl` | `7d` | `exited` 的 state 记录保留多久([02 §7](02-session.md)) |
+| `url_host` | 由 `bind` 推导 | `s.url` 里用的主机名(机器在 NAT/反代后面时给它) |
+| `start_ttyd` | `True` | `False` = 只管 tmux,不碰端口。CLI 的读命令走这条,免得 `tmuxd ls` 顺手起一个 ttyd 又立刻带走 |
 
 对应的 `TMUXD_*` 环境变量作为兜底(`TMUXD_PORT`、`TMUXD_TOKEN`…),
 优先级:构造参数 > 环境变量 > 默认。CLI 再往前压一层配置文件。
@@ -283,21 +288,43 @@ tmuxd 只是不为分屏提供任何 API,操作一律落在活动 pane 上。
 ttyd 的 `-a` 允许 URL 传参,那就意味着有人能直接敲 `?arg=rogue`。
 所以 pty 创建点必须挡一道 —— **会话只能由库创建**:
 
-```bash
-# bin/attach.sh —— ttyd -a 调用,$1 = 会话 id
-# $_TMUXD_SOCK 由库拉 ttyd 时注入
-[ -n "$1" ] || exit 1
-if ! tmux -L "$_TMUXD_SOCK" has-session -t "=$1" 2>/dev/null; then
-    echo "unknown session: $1"; exit 1
+```sh
+#!/bin/sh
+# $_TMUXD_SOCK / $_TMUXD_TMUX 由库拉 ttyd 时注入到它的环境里
+set -eu
+TMUX="${_TMUXD_TMUX:-tmux}"; SOCK="${_TMUXD_SOCK:-tmuxd}"
+[ "$#" -ge 1 ] && [ -n "$1" ] || { echo "tmuxd: no session id given" >&2; exit 1; }
+if ! "$TMUX" -L "$SOCK" has-session -t "=$1" 2>/dev/null; then
+    echo "tmuxd: unknown session '$1'" >&2; exit 1
 fi
-exec tmux -L "$_TMUXD_SOCK" attach-session -t "=$1"
+exec "$TMUX" -L "$SOCK" attach-session -t "=$1"
 ```
 
 - **`attach-session` 而不是 `new-session -A`** —— 创建的活全在库那边干完了,
   这里只负责接上。`attach.sh` 从不创建会话;
 - **`-t "=$1"`** —— `=` 前缀关掉 tmux 的前缀匹配。不加的话 `attach -t work` 会匹配上
-  `workbench`,是个真实会踩的坑;
-- **六行,没有一个条件分支** —— 因为这一层没有只读模式,也没有别的模式。
+  `workbench`,是个真实会踩的坑(§9.1);
+- **没有一个条件分支** —— 因为这一层没有只读模式,也没有别的模式。
+
+### 9.1 精确匹配:session 目标和 pane 目标写法不同
+
+这条踩下去很疼,单独记:
+
+> **实测(2026-08-08,tmux 3.3a)**,只存在会话 `workbench` 时:
+>
+> | 写法 | 结果 |
+> | --- | --- |
+> | `send-keys -t 'work:'` | **exit 0,字符静默进了 `workbench`** |
+> | `send-keys -t '=work'` | `can't find pane: =work` —— 解析不了 |
+> | `send-keys -t '=work:'` | `can't find session: work` ✅ |
+> | `has-session -t 'work'` | **exit 0**(前缀匹配) |
+> | `has-session -t '=work'` | exit 1 ✅ |
+>
+> 也就是说:**session 类命令用 `=id`,pane 类命令(`send-keys` / `capture-pane` /
+> `display -p`)必须写成 `=id:`** —— 少个冒号 tmux 根本解析不出目标,
+> 而少个等号就会把按键送到别人的终端里。
+
+这也是为什么所有 tmux 命令行只在一处拼(§10):这种规则散在各处必然写歪。
 
 > **实测(2026-08-08,本机)**:tmux 3.3a、ttyd 1.7.7。
 > `ttyd --help` 确认 `-a/--url-arg`、`-W/--writable`(**readonly by default**)、
@@ -310,24 +337,26 @@ exec tmux -L "$_TMUXD_SOCK" attach-session -t "=$1"
 
 ```
 tmuxd/
-├── pyproject.toml
-├── deploy/tmux.conf
-├── bin/attach.sh             # ttyd → tmux(含存在性校验,§9)
+├── pyproject.toml            # 零运行时依赖
 ├── tmuxd/                    # ← 核心就是这里
-│   ├── __init__.py           # Tmuxd、Session 两个类,对外只有它们
-│   ├── core.py               # Tmuxd:构造、ttyd 生命周期、会话增删查
-│   ├── session.py            # Session:send / send_key / url / kill
+│   ├── __init__.py           # Tmuxd、Session、异常,对外只有它们
+│   ├── core.py               # Tmuxd:构造、ttyd 生命周期、会话增删查、对账
+│   ├── session.py            # Session:send / send_key / rename / kill / url
 │   ├── tmux.py               # 唯一一处拼 tmux 命令行的地方
 │   ├── ttyd.py               # 拉起 / 复用 / 绑生死(§3)
-│   ├── state.py             # 原子写、文件锁、对账、回收
-│   ├── http.py               # 可选的 HTTP 暴露(见 03),import 时不加载
-│   └── cli.py                # 命令行壳(见 04)
+│   ├── state.py              # 原子写、文件锁
+│   ├── errors.py             # 两个基类,HTTP 错误码是它们的投影
+│   ├── http.py               # 可选的 HTTP 壳(见 03),按需 import
+│   ├── remote.py             # RemoteTmuxd,同样按需 import
+│   ├── cli.py                # 命令行壳(见 04)
+│   └── data/                 # attach.sh + tmux.conf 模板,随包发出去
 └── tests/
 ```
 
 两条纪律:
 
-- **`tmux.py` 是唯一拼 tmux 命令行的地方。** 不是洁癖:tmux 的 `-t` 目标语法、
+- **`tmux.py` 是唯一拼 tmux 命令行的地方。** 不是洁癖:tmux 的 `-t` 目标语法(§9.1)、
   format 字符串、转义规则处处是坑,散在各处必然写歪;
-- **`http.py` 必须是可选依赖。** `import tmuxd` 不该把一个 Web 框架拖进来 ——
-  它是壳,不是内核。装 `pip install tmuxd[http]` 才有。
+- **`import tmuxd` 不该拖进任何东西。** `http.py` / `remote.py` 都在用到时才 import,
+  而且**整个包零运行时依赖** —— HTTP 壳是标准库 `http.server` 写的。
+  八个端点、没有长连接,一个 Web 框架在这里帮不上忙,却会成为所有人的安装负担。

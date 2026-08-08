@@ -171,13 +171,16 @@ POST /api/sessions/id5/keys
 | `session_exists` | 409 | `SessionExists` | 这个 id 已经有会话了 |
 | `bad_id` | 400 | `BadId` | id 含 `.` `:` 或为空 |
 | `port_in_use` | 409 | `PortInUse` | 端口上是别人的东西([01 §3.1](01-library.md)) |
-| `unauthorized` | 401 | — | token 不对(只有 HTTP 这层有) |
+| `unauthorized` | 401 | `Unauthorized` | token 不对 |
 | `tmux_gone` | 503 | `TmuxGone` | tmux server 没了。**告警,别重试** |
-| `bad_request` | 400 | `ValueError` | 参数不对 |
+| `not_found` | 404 | — | 没这条路由(只有 HTTP 这层有) |
+| `bad_request` | 400 | `ValueError` | 请求体不是 JSON 对象,或参数不对 |
 
 前三个是**调用方能自愈**的;`tmux_gone` 是这台机器出事了。
-库里两个异常基类:`SessionError` 和 `RuntimeError_`,和上表一一对应 ——
-**HTTP 的错误码是库异常的投影,不是另立一套。**
+库里两个异常基类 —— `SessionError`(你要的东西不对,能改)和
+`PlatformError`(环境不对,该告警)—— 和上表一一对应。
+**HTTP 的错误码是库异常的投影,不是另立一套**:`errors.py` 里每个类带一个 `code`,
+HTTP 壳原样序列化,`RemoteTmuxd` 再按 `code` 把它还原成同一个异常类。
 
 **没有 `timeout`、没有 `not_a_shell`、没有 `read_only`、没有 `cmd_not_found`**
 —— 对应的功能都不在了。命令跑不起来不是一种错误码,是那个会话在列表里显示 `exited`
@@ -196,7 +199,8 @@ POST /api/sessions/id5/keys
 在这个量级上(几十个会话、状态一秒钟变不了几次),**轮询就是正确答案**,不是将就。
 
 于是这层壳只是一个普通的 JSON HTTP 服务,没有长连接要维护 ——
-**它薄到可以用任何框架实现,换掉也不影响库。**
+薄到**用标准库的 `http.server` 就写完了**,整个包因此零运行时依赖。
+一个 Web 框架在这里帮不上什么忙,却会成为每个 `pip install tmuxd` 的人的负担。
 
 ## 8. 远程调用方
 

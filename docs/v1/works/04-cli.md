@@ -33,8 +33,8 @@ CLI 是**套在库外面的第三个壳**([01 §1](01-library.md))。它不走 H
 想让那个网页入口一直在,就得有个进程守着 —— 这就是 `serve`:
 
 ```bash
-tmuxd serve   [--port 12345] [--bind 0.0.0.0] [--token …]   # 前台阻塞
-tmuxd start   # 后台起,打印 URL 和 token
+tmuxd serve   [--port 12345] [--bind 0.0.0.0] [--token …] [--http-port 12346]
+tmuxd start   # 同样的参数,只是转到后台
 tmuxd stop    # 停 ttyd。会话全活着
 tmuxd status  # 回头核实:pid 在不在、端口应不应答
 tmuxd info    # 版本、ttyd、tmux 二进制与版本、会话统计
@@ -63,8 +63,12 @@ tmuxd kill-server --tmux      # 真的要杀 tmuxd 的 tmux server(它的会话�
 
 `--tmux` 杀的是 **tmuxd 专属的那个 tmux server**,碰不到你自己的 —— 两者在不同 socket 上。
 
-`serve` 给 systemd / 容器 ENTRYPOINT 用;`start` / `stop` 给"手边没有进程管理器"的人用。
+`serve` 给 systemd / 容器 ENTRYPOINT 用;`start` / `stop` 给"手边没有进程管理器"的人用
+(`start` 就是把 `serve` 用 `start_new_session` 甩到后台,再轮询等它就绪 ——
+起不来就把 `daemon.log` 的尾巴摆到眼前,而不是丢个 pid 让人自己找)。
 两条路跑的是同一份 `Tmuxd(...)`,只是外面包的壳不同。
+
+`--http-port` 才会把 HTTP 壳一起起来([03 §1](03-http.md)),默认没有。
 
 ## 3. 会话
 
