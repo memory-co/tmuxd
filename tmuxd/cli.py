@@ -228,8 +228,14 @@ def cmd_info(args):
         print(json.dumps(info, indent=2))
         return EXIT_OK
     print("tmuxd   %s" % info["version"])
-    if info.get("ttyd"):
-        print("ttyd    %(version)s  port=%(port)s  owned=%(owned)s" % info["ttyd"])
+    ttyd = info.get("ttyd")
+    if not ttyd:
+        print("ttyd    no port configured")
+    elif not ttyd["listening"]:
+        print("ttyd    not running (port %s would be the entrance)" % ttyd["port"])
+    else:
+        print("ttyd    %s  port=%s  owned=%s" % (
+            ttyd["version"] or "?", ttyd["port"], ttyd["owned"]))
     print("tmux    %(version)s  %(bin)s  socket=%(socket)s  running=%(running)s" % info["tmux"])
     print("sessions %(total)d total  %(alive)d alive  %(exited)d exited  %(external)d external"
           % info["sessions"])
