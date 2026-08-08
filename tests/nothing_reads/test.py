@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from tests.conftest import free_port, needs_tmux
-from tmuxd.remote import RemoteSession
+from tests.conftest import needs_tmux
+from tmuxd.core import Tmuxd
 from tmuxd.session import Session
 
 pytestmark = needs_tmux
@@ -28,34 +28,51 @@ def test_session_has_no_read_method(name):
 
 @pytest.mark.parametrize("name", READING)
 def test_tmuxd_has_no_read_method(name):
-    from tmuxd import Tmuxd
-
     assert not hasattr(Tmuxd, name)
 
 
-def test_the_whole_session_surface_is_five_things_and_a_url():
+def test_the_whole_session_surface_is_four_things_and_a_url():
     public = {n for n in dir(Session) if not n.startswith("_")}
     assert public == {
-        "send", "send_key", "rename", "kill", "to_dict",   # 方法
-        "url", "status", "alive", "clients", "current_command",  # 属性
+        "send", "send_key", "kill", "to_dict",                    # 方法
+        "url", "status", "alive", "clients", "current_command",   # 属性
         "id", "cwd", "cmd", "created_at", "last_attached", "external",  # 字段
     }
 
 
-def test_remote_adds_no_reading_either(instance):
-    """远程那头也不会多出读的能力 —— 两边接口必须一模一样。"""
-    public = lambda c: {n for n in dir(c) if not n.startswith("_")}
-    assert public(Session) == public(RemoteSession)
+def test_the_library_starts_no_http_server_of_its_own():
+    """嵌进来的人已经有一个 app 在跑了 —— 库该给 router,不该自己起 server。"""
+    assert not hasattr(Tmuxd, "serve_http")
 
 
-# -- HTTP 壳 ----------------------------------------------------------------
+def test_import_tmuxd_does_not_drag_in_fastapi():
+    """基础安装零依赖,靠的就是这条 —— FastAPI 只在 [server] 那条链路上。"""
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import sys, tmuxd; print('fastapi' in sys.modules or 'uvicorn' in sys.modules)"],
+        capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False"
+
+
+# -- 控制口 -----------------------------------------------------------------
 
 
 @pytest.fixture
-def api(instance):
-    shell = instance.serve_http(free_port(), token="tok")
-    yield instance, shell
-    shell.stop()
+def app(instance):
+    pytest.importorskip("fastapi", reason="control API needs tmuxd[server]")
+    from tmuxd.server import create_app
+
+    return create_app(instance)
+
+
+@pytest.fixture
+def client(app):
+    from fastapi.testclient import TestClient
+
+    return TestClient(app)
 
 
 @pytest.mark.parametrize("path", [
@@ -65,69 +82,65 @@ def api(instance):
     "/api/sessions/x/record",
     "/api/events",
 ])
-def test_http_has_no_read_routes(api, path):
-    from tmuxd.http import _NotFound
-
-    _, shell = api
-    headers = {"Authorization": "Bearer tok"}
-    with pytest.raises(_NotFound):
-        shell.dispatch("GET", path, {}, headers)
+def test_the_control_api_has_no_read_routes(client, path):
+    assert client.get(path).status_code == 404
 
 
-def test_http_exposes_exactly_eight_routes(api):
-    """路由表短是有意的。多一条就该有人解释为什么。"""
-    from tmuxd.http import _ACTION_RE, _SESSION_RE
+def test_the_control_api_exposes_exactly_seven_routes(app):
+    """路由表短是有意的。多一条就该有人解释为什么。
 
-    _, shell = api
-    headers = {"Authorization": "Bearer tok"}
-
-    ok = 0
-    for method, path in [
-        ("GET", "/api/health"), ("GET", "/api/info"),
-        ("GET", "/api/sessions"), ("POST", "/api/sessions"),
-    ]:
-        body = {"id": "probe"} if method == "POST" else {}
-        shell.dispatch(method, path, body, headers)
-        ok += 1
-    # 带 id 的四条:GET / DELETE / keys / rename
-    assert _SESSION_RE.match("/api/sessions/probe")
-    assert _ACTION_RE.match("/api/sessions/probe/keys")
-    assert _ACTION_RE.match("/api/sessions/probe/rename")
-    assert ok == 4
-
-
-def test_the_handler_speaks_only_three_verbs(api):
-    """没有 WS 就没有升级握手要处理 —— 结构上锁,不按文本 grep。
-
-    (源码里出现 "websocket" 这个词是正当的:文档字符串正在解释为什么没有。)
+    断言走 OpenAPI 而不是 app.routes:那是对外契约(管控口本来就是给别的语言
+    调的),而且不受 FastAPI 内部怎么存路由的影响 —— 0.141 就把 include_router
+    进来的东西包成了 _IncludedRouter,不再摊平到 app.routes 里。
     """
-    from tmuxd.http import _make_handler
+    paths = app.openapi()["paths"]
+    routes = {(m.upper(), path) for path, ops in paths.items() for m in ops}
+    assert routes == {
+        ("GET", "/api/health"),
+        ("GET", "/api/info"),
+        ("GET", "/api/sessions"),
+        ("POST", "/api/sessions"),
+        ("GET", "/api/sessions/{sid}"),
+        ("DELETE", "/api/sessions/{sid}"),
+        ("POST", "/api/sessions/{sid}/keys"),
+    }
 
-    _, shell = api
-    handler = _make_handler(shell)
-    verbs = {n for n in vars(handler) if n.startswith("do_")}
-    assert verbs == {"do_GET", "do_POST", "do_DELETE"}
-    assert not any(n.lower().startswith("do_upgrade") for n in dir(handler))
+
+def test_no_websocket_route(instance):
+    """ttyd 那条终端通道除外,而那条不是我们写的。"""
+    from starlette.routing import WebSocketRoute
+
+    from tmuxd.server import router
+
+    assert not [r for r in router(instance).routes
+                if isinstance(r, WebSocketRoute)]
 
 
 # -- CLI --------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["capture", "run", "wait", "stream", "watch"])
-def test_cli_has_no_read_command(name):
+@pytest.mark.parametrize("name", ["capture", "run", "wait", "stream", "watch", "rename"])
+def test_cli_has_no_such_command(name):
     from tmuxd.cli import build_parser
 
-    sub = [a for a in build_parser()._actions if hasattr(a, "choices") and a.choices]
-    commands = set(sub[0].choices) if sub else set()
-    assert name not in commands
+    sub = [a for a in build_parser()._actions if getattr(a, "choices", None)][0]
+    assert name not in sub.choices
 
 
 def test_cli_commands_are_exactly_these():
     from tmuxd.cli import build_parser
 
-    sub = [a for a in build_parser()._actions if hasattr(a, "choices") and a.choices]
-    assert set(sub[0].choices) == {
+    sub = [a for a in build_parser()._actions if getattr(a, "choices", None)][0]
+    assert set(sub.choices) == {
         "serve", "start", "stop", "status", "info",
-        "new", "ls", "url", "kill", "rename", "has",
-        "send", "keys", "kill-server",
+        "new", "ls", "url", "kill", "has", "send", "keys", "kill-server",
     }
+
+
+def test_there_is_no_remote_client():
+    """远端用 ssh,或者直接 requests 打那七个端点(works/03 §13)。"""
+    import tmuxd
+
+    assert not hasattr(tmuxd, "RemoteTmuxd")
+    with pytest.raises(ImportError):
+        __import__("tmuxd.remote")

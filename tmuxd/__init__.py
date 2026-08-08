@@ -7,8 +7,8 @@
     s.send("run the tests", enter=True)
     print(s.url)                              # http://localhost:12345/?arg=id5
 
-The library is the core. The CLI (``tmuxd.cli``) and the HTTP endpoint
-(``tmuxd.http``, off by default) are shells around it.
+The library is the core. Embedding it needs no server at all; the CLI does,
+and that is ``tmuxd serve`` plus the ``[server]`` extra (works/03-server.md).
 
 Design notes live in ``docs/v1/works/``.
 """
@@ -53,10 +53,6 @@ __all__ = [
 ]
 
 
-def __getattr__(name):
-    # Kept lazy so `import tmuxd` never drags the HTTP shell in with it.
-    if name == "RemoteTmuxd":
-        from .remote import RemoteTmuxd
-
-        return RemoteTmuxd
-    raise AttributeError(name)
+# `tmuxd.server` is deliberately not imported here: `import tmuxd` must never
+# drag FastAPI in behind it. It lives in the `[server]` extra, for the CLI path
+# only (works/03-server.md §6).

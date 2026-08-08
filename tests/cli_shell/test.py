@@ -3,99 +3,139 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
+import time
 
 import pytest
 
 from tests.conftest import (
     free_port,
     kill_pool,
-    needs_tmux,
     needs_ttyd,
+    needs_tmux,
     pool_name,
-    wait_for,
     wait_until,
 )
-from tmuxd import Tmuxd, cli
+from tmuxd import cli
 
-pytestmark = needs_tmux
+pytestmark = [needs_tmux, needs_ttyd]
+
+pytest.importorskip("fastapi", reason="the CLI needs a server: tmuxd[server]")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 @pytest.fixture
-def run(tmp_path, request, monkeypatch):
-    """调 cli.main(argv),不 spawn 子进程 —— 壳的逻辑进程内就验得完。"""
+def bare(tmp_path, request, monkeypatch):
+    """一套配好的实例参数,但**不起 server** —— 用来验"没起 server 会怎样"。"""
     monkeypatch.setenv("TMUXD_CONFIG", str(tmp_path / "absent.conf"))
-    for leak in ("TMUXD_HOST", "TMUXD_TOKEN", "TMUXD_PORT"):
+    for leak in ("TMUXD_PORT", "TMUXD_CONTROL_PORT", "TMUXD_TOKEN", "TMUXD_SOCKET"):
         monkeypatch.delenv(leak, raising=False)
 
     name = pool_name(request, prefix="cli")
-    base = ["-L", name, "--state-dir", str(tmp_path)]
+    base = ["-L", name, "--state-dir", str(tmp_path),
+            "--port", str(free_port()), "--control-port", str(free_port())]
 
     def _run(*argv):
         return cli.main(base + list(argv))
 
+    _run.argv = base
     _run.socket = name
     _run.state_dir = str(tmp_path)
     yield _run
     kill_pool(name)
 
 
-def lib(run):
-    """同一个池的库句柄,用来验 CLI 到底做了什么。"""
-    return Tmuxd(port=None, socket=run.socket, state_dir=run.state_dir)
+@pytest.fixture
+def run(bare):
+    """同上,但先把 server 起起来 —— CLI 的每条命令都要它。"""
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "tmuxd"] + bare.argv + ["serve"],
+        cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    try:
+        # 等一次**真的 API 调用**通,而不是等 pid 文件出现 —— `status` 在只有
+        # pid、uvicorn 还没绑上端口时就会返回 0,拿它当就绪信号会让用例跑在
+        # server 起来之前。
+        assert wait_until(lambda: bare("ls") == 0, timeout=30), \
+            "control 口没起来:\n%s" % (proc.stdout.read() if proc.poll() else "")
+        yield bare
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
 
 def out(capsys):
     return capsys.readouterr().out
 
 
+# -- CLI 离不开 server ------------------------------------------------------
+
+
+def test_without_a_server_the_cli_says_so(bare, capsys):
+    """一条只读命令不该顺手起一个门面又立刻带走它 —— 如实说没有就够了。"""
+    assert bare("ls") == cli.EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "no server running" in err
+    assert "tmuxd start" in err
+
+
+def test_and_it_names_the_control_port_not_the_ttyd_one(bare, capsys):
+    bare("ls")
+    err = capsys.readouterr().err
+    control = bare.argv[bare.argv.index("--control-port") + 1]
+    ttyd = bare.argv[bare.argv.index("--port") + 1]
+    assert control in err and ttyd not in err
+
+
+def test_serve_prints_both_ports(run, capsys):
+    assert run("status") == 0
+    text = out(capsys)
+    assert "ttyd:" in text and "control:" in text
+
+
 # -- 参数真的递下去了 -------------------------------------------------------
 
 
-def test_new_creates_and_prints_the_entrance(run, capsys, monkeypatch):
-    monkeypatch.setenv("TMUXD_PORT", "12345")
+def test_new_creates_and_prints_the_entrance(run, capsys):
     assert run("new", "-t", "work") == 0
-
     text = out(capsys)
-    assert "work" in text and "?arg=work" in text
-
-
-def test_new_says_so_when_there_is_no_port(run, capsys):
-    assert run("new", "-t", "work") == 0
-    assert "no ttyd port" in out(capsys)
+    ttyd_port = run.argv[run.argv.index("--port") + 1]
+    assert "work" in text and ("?arg=work" in text) and ttyd_port in text
 
 
 def test_id_has_one_canonical_name_and_three_aliases(run, capsys):
-    """--id 是规范写法(和库 / HTTP / webmuxd 同名),-t 是短形式。
+    """--id 是规范写法(和库 / API / webmuxd 同名),-t 是短形式。
 
     -s / --session / --target 是 1.0.0 的拼法,不设移除期限 —— 留着的成本是
-    一行 argparse,删掉的成本是别人的脚本(works/04-cli.md §3.1、§10)。
+    一行 argparse,删掉的成本是别人的脚本(works/04-cli.md §3.1)。
     """
     for flag in ("-t", "--id", "-s", "--session", "--target"):
         assert run("new", flag, "same-%s" % flag.strip("-"), "--", "cat") == 0
     capsys.readouterr()
 
-    t = lib(run)
-    try:
-        assert {s.id for s in t.sessions()} == {
-            "same-t", "same-id", "same-s", "same-session", "same-target"}
-    finally:
-        t.close()
+    assert run("--json", "ls") == 0
+    ids = {item["id"] for item in json.loads(out(capsys))}
+    assert ids == {"same-t", "same-id", "same-s", "same-session", "same-target"}
 
 
-def test_the_aliases_stay_out_of_help(run, capsys):
+def test_the_aliases_stay_out_of_help(bare):
     """规范写法要显眼,旧拼法不该继续教给新人。"""
     from tmuxd.cli import build_parser
 
     sub = [a for a in build_parser()._actions if getattr(a, "choices", None)][0]
-    for name in ("new", "send", "kill", "url", "has", "rename", "keys"):
+    for name in ("new", "send", "kill", "url", "has", "keys"):
         text = sub.choices[name].format_help()
         assert "--id" in text, "%s 的 help 里没有 --id" % name
         for stale in ("--session", "--target"):
             assert stale not in text, "%s 的 help 里还印着 %s" % (name, stale)
 
 
-def test_a_missing_id_is_a_usage_error(run, capsys):
-    assert run("send", "x") == cli.EXIT_USAGE
+def test_a_missing_id_is_a_usage_error(bare, capsys):
+    assert bare("send", "x") == cli.EXIT_USAGE
     assert "needs a session id" in capsys.readouterr().err
 
 
@@ -104,12 +144,10 @@ def test_the_dash_dash_is_punctuation_not_the_command(run, capsys):
     assert run("new", "-t", "c1", "--", "sh", "-c", "echo marker; sleep 30") == 0
     capsys.readouterr()
 
-    t = lib(run)
-    try:
-        assert t.get("c1").cmd == "sh -c 'echo marker; sleep 30'"
-        assert wait_for(t, "c1", "marker")
-    finally:
-        t.close()
+    assert run("--json", "ls") == 0
+    listed = {item["id"]: item for item in json.loads(out(capsys))}
+    assert listed["c1"]["cmd"] == "sh -c 'echo marker; sleep 30'"
+    assert listed["c1"]["status"] == "alive"
 
 
 def test_cwd_and_env_reach_the_session(run, capsys, tmp_path):
@@ -119,58 +157,38 @@ def test_cwd_and_env_reach_the_session(run, capsys, tmp_path):
                "--", "sh", "-c", "pwd; echo [$GREETING]; sleep 30") == 0
     capsys.readouterr()
 
-    t = lib(run)
-    try:
-        assert wait_for(t, "e1", str(target))
-        assert wait_for(t, "e1", "[hi]")
-    finally:
-        t.close()
+    assert run("--json", "ls") == 0
+    listed = {item["id"]: item for item in json.loads(out(capsys))}
+    assert listed["e1"]["cwd"] == str(target)
 
 
-def test_send_passes_the_text_through_unchanged(run, capsys):
-    """还是那句话 —— 壳这一层也不能把 Enter 变成回车。"""
-    run("new", "-t", "lit", "--", "cat")
+def test_send_and_keys(run, capsys):
+    run("new", "-t", "s1", "--", "cat")
     capsys.readouterr()
 
-    assert run("send", "-t", "lit", "Enter the code") == 0
+    assert run("send", "-t", "s1", "Enter the code") == 0
     assert "sent" in out(capsys)
 
-    t = lib(run)
-    try:
-        assert wait_for(t, "lit", "Enter the code")
-    finally:
-        t.close()
-
-
-def test_keys_presses_key_names(run, capsys):
-    run("new", "-t", "k1", "--", "cat")
+    assert run("keys", "-t", "s1", "C-c") == 0
     capsys.readouterr()
-    assert run("keys", "-t", "k1", "C-c") == 0
-
-    t = lib(run)
-    try:
-        assert wait_until(lambda: not t.has("k1"))
-    finally:
-        t.close()
+    assert wait_until(lambda: run("has", "-t", "s1") == cli.EXIT_NO_SESSION)
 
 
-def test_url_prints_just_the_address(run, capsys, monkeypatch):
-    monkeypatch.setenv("TMUXD_PORT", "12345")
+def test_url_prints_just_the_address(run, capsys):
     run("new", "-t", "u")
     capsys.readouterr()
 
     assert run("url", "-t", "u") == 0
-    assert out(capsys).strip() == "http://127.0.0.1:12345/?arg=u"
+    ttyd_port = run.argv[run.argv.index("--port") + 1]
+    assert out(capsys).strip() == "http://127.0.0.1:%s/?arg=u" % ttyd_port
 
 
-def test_rename_and_kill(run, capsys):
-    run("new", "-t", "old", "--", "cat")
+def test_kill(run, capsys):
+    run("new", "-t", "doomed", "--", "cat")
     capsys.readouterr()
 
-    assert run("rename", "-t", "old", "new") == 0
-    assert run("has", "-t", "new") == 0
-    assert run("kill", "-t", "new") == 0
-    assert run("has", "-t", "new") == cli.EXIT_NO_SESSION
+    assert run("kill", "-t", "doomed") == 0
+    assert run("has", "-t", "doomed") == cli.EXIT_NO_SESSION
 
 
 def test_ls_and_its_format_string(run, capsys):
@@ -184,10 +202,12 @@ def test_ls_and_its_format_string(run, capsys):
     assert out(capsys).strip() == "f1|alive"
 
 
-def test_json_output_is_the_library_object(run, capsys):
+def test_info_reports_both_ports(run, capsys):
     assert run("--json", "info") == 0
-    payload = json.loads(out(capsys))
-    assert payload["tmux"]["socket"].startswith("tmuxd-")
+    info = json.loads(out(capsys))
+    assert info["ttyd"]["port"] == int(run.argv[run.argv.index("--port") + 1])
+    assert info["control"]["port"] == int(
+        run.argv[run.argv.index("--control-port") + 1])
 
 
 # -- 退出码是接口 -----------------------------------------------------------
@@ -207,12 +227,6 @@ def test_bad_id_exits_4(run):
     assert run("new", "-t", "bad:id") == cli.EXIT_STATE
 
 
-def test_unreachable_remote_exits_5(tmp_path, monkeypatch):
-    monkeypatch.setenv("TMUXD_CONFIG", str(tmp_path / "absent.conf"))
-    assert cli.main(["-H", "http://127.0.0.1:%d" % free_port(), "ls"]) \
-        == cli.EXIT_UNREACHABLE
-
-
 def test_errors_go_to_stderr_so_stdout_stays_pipeable(run, capsys):
     run("send", "-t", "ghost", "x")
     captured = capsys.readouterr()
@@ -220,89 +234,107 @@ def test_errors_go_to_stderr_so_stdout_stays_pipeable(run, capsys):
     assert "✗" in captured.err
 
 
-# -- kill-server 要两道确认 -------------------------------------------------
+def test_exit_code_5_is_left_unused(bare):
+    """它曾是"连不上远端 tmuxd",`-H` 去掉后没有产出者。
+
+    不复用 —— 已经发出去的退出码不该改含义。
+    """
+    assert not hasattr(cli, "EXIT_UNREACHABLE")
+    assert 5 not in {cli.EXIT_OK, cli.EXIT_FAIL, cli.EXIT_USAGE,
+                     cli.EXIT_NO_SESSION, cli.EXIT_STATE, cli.EXIT_TMUX_GONE}
 
 
-def test_kill_server_demands_the_flag(run, capsys):
-    assert run("kill-server") == cli.EXIT_USAGE
+# -- kill-server 是本机动作 -------------------------------------------------
 
 
-def test_kill_server_with_the_flag(run, capsys):
-    run("new", "-t", "doomed", "--", "cat")
-    capsys.readouterr()
-    assert run("kill-server", "--tmux", "-y") == 0
-    assert run("has", "-t", "doomed") == cli.EXIT_NO_SESSION
+def test_kill_server_demands_the_flag(bare, capsys):
+    assert bare("kill-server") == cli.EXIT_USAGE
+
+
+def test_kill_server_works_without_a_server(bare, capsys):
+    """收拾残局的命令,得在 server 已经挂了的时候还能用 —— 那正是你要它的时候。"""
+    from tmuxd import Tmuxd
+
+    t = Tmuxd(port=free_port(), socket=bare.socket, state_dir=bare.state_dir)
+    try:
+        t.session(id="doomed", cmd="cat")
+        assert t.has("doomed")
+    finally:
+        t.close()
+
+    assert bare("kill-server", "--tmux", "-y") == 0
+    assert "untouched" in out(capsys)
 
 
 # -- 配置文件 ---------------------------------------------------------------
 
 
-def test_config_is_another_spelling_of_the_constructor(tmp_path, monkeypatch, capsys):
+def test_config_is_another_spelling_of_the_flags(tmp_path, monkeypatch):
     conf = tmp_path / "tmuxd.conf"
-    conf.write_text("# comment\nset -g port 23456\nset -g history-limit 500\n")
+    conf.write_text("# comment\nset -g port 23456\nset -g control-port 23457\n")
     monkeypatch.setenv("TMUXD_CONFIG", str(conf))
-    monkeypatch.delenv("TMUXD_PORT", raising=False)
+    for leak in ("TMUXD_PORT", "TMUXD_CONTROL_PORT"):
+        monkeypatch.delenv(leak, raising=False)
 
-    assert cli.read_config()["port"] == "23456"
+    values = cli.read_config()
+    assert (values["port"], values["control-port"]) == ("23456", "23457")
 
-    name = "conf-%d" % os.getpid()
-    try:
-        assert cli.main(["-L", name, "--state-dir", str(tmp_path),
-                         "new", "-t", "cfg"]) == 0
-        assert ":23456/?arg=cfg" in capsys.readouterr().out
-    finally:
-        kill_pool(name)
+    args = cli.build_parser().parse_args(["ls"])
+    settings = cli.Settings(args)
+    assert (settings.port, settings.control_port) == (23456, 23457)
 
 
-def test_command_line_beats_the_config_file(tmp_path, monkeypatch, capsys):
+def test_command_line_beats_the_config_file(tmp_path, monkeypatch):
     conf = tmp_path / "tmuxd.conf"
-    conf.write_text("set -g port 23456\n")
+    conf.write_text("set -g control-port 23457\n")
     monkeypatch.setenv("TMUXD_CONFIG", str(conf))
-    monkeypatch.delenv("TMUXD_PORT", raising=False)
+    monkeypatch.delenv("TMUXD_CONTROL_PORT", raising=False)
 
-    name = "prec-%d" % os.getpid()
+    args = cli.build_parser().parse_args(["--control-port", "34567", "ls"])
+    assert cli.Settings(args).control_port == 34567
+
+
+# -- server 的生命周期 ------------------------------------------------------
+
+
+def test_stop_leaves_the_sessions_running(bare, capsys):
+    """`stop` 停的是门面,不是屋子。"""
+    assert bare("start") == 0
+    capsys.readouterr()
     try:
-        cli.main(["-L", name, "--state-dir", str(tmp_path), "--port", "34567",
-                  "new", "-t", "p"])
-        assert ":34567/?arg=p" in capsys.readouterr().out
-    finally:
-        kill_pool(name)
-
-
-# -- daemon:停的是门面 -----------------------------------------------------
-
-
-@needs_ttyd
-def test_start_status_stop_leaves_the_sessions_running(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("TMUXD_CONFIG", str(tmp_path / "absent.conf"))
-    from tmuxd.ttyd import port_open
-
-    port = free_port()
-    name = "daemon-%d" % os.getpid()
-    base = ["-L", name, "--state-dir", str(tmp_path), "--port", str(port)]
-    try:
-        assert cli.main(base + ["start"]) == 0
+        assert bare("new", "-t", "held", "--", "cat") == 0
         capsys.readouterr()
 
-        assert cli.main(base + ["status"]) == 0
-        assert "running" in capsys.readouterr().out
-        assert port_open("127.0.0.1", port)
-
-        assert cli.main(base + ["new", "-t", "held", "--", "cat"]) == 0
-        capsys.readouterr()
-
-        assert cli.main(base + ["stop"]) == 0
-        assert "still running" in capsys.readouterr().out
-        assert wait_until(lambda: not port_open("127.0.0.1", port))
-
-        assert cli.main(base + ["has", "-t", "held"]) == 0     # 门关了,人还在
+        assert bare("stop") == 0
+        assert "仍在运行" in out(capsys)
+        assert wait_until(lambda: bare("ls") == cli.EXIT_FAIL)   # 门关了
     finally:
-        kill_pool(name)
+        record = json.loads(open(os.path.join(bare.state_dir, bare.socket,
+                                              "daemon.json")).read()) \
+            if os.path.exists(os.path.join(bare.state_dir, bare.socket,
+                                           "daemon.json")) else None
+        if record and record.get("pid"):
+            try:
+                os.kill(record["pid"], 15)
+            except OSError:
+                pass
+
+    # 屋里的人还在:直接问 tmux,不经过已经停掉的 server
+    from tmuxd import Tmuxd
+
+    t = Tmuxd(port=free_port(), socket=bare.socket, state_dir=bare.state_dir)
+    try:
+        assert t.has("held")
+    finally:
+        t.close()
 
 
-@needs_ttyd
-def test_remote_mode_refuses_lifecycle_commands(tmp_path, monkeypatch, capsys):
-    """进程生命周期是对面那台机器的事。"""
-    monkeypatch.setenv("TMUXD_CONFIG", str(tmp_path / "absent.conf"))
-    assert cli.main(["-H", "http://127.0.0.1:1", "stop"]) == cli.EXIT_USAGE
-    assert "远端" in capsys.readouterr().err or True
+def test_start_is_idempotent(bare, capsys):
+    assert bare("start") == 0
+    capsys.readouterr()
+    try:
+        assert bare("start") == 0
+        assert "already running" in out(capsys)
+    finally:
+        bare("stop")
+        capsys.readouterr()

@@ -21,14 +21,15 @@ fixture 来源)和 `test.py`。相关的用例合并在一个场景下,跟「按
 | [`the_entrance/`](the_entrance/) | **人从哪进来**:URL 就是 ttyd 原生的 `?arg=`,算它不需要活着的 Python 进程;token 由 ttyd 把关;`?arg=` 是调用方可控的,所以 `attach.sh` 在 pty 创建点只 attach、从不创建 |
 | [`port_reuse/`](port_reuse/) | **端口上已经有 ttyd 了怎么办**:空着就起一个(归我管)、是自己人就接手(接手方 `close()` 不带走它)、是陌生人就 `PortInUse` 不猜不抢;外加"看得见门开着而不必自己开一个" |
 | [`your_tmux_untouched/`](your_tmux_untouched/) | **装一个服务不该动到你手里正在跑的东西**:专属 socket、`socket="default"` 直接报错、server 不存在时 `sessions()` 是 `[]` 而不是抛、`external` 只列不收编、**GC 只删 JSON 永远不 kill** |
-| [`nothing_reads/`](nothing_reads/) | **守门测试:断言"没有"**。三层壳都没有 capture / run / stream / 录制 / 事件流。要加读能力,先改 `works/03-server.md` 的论证,再让这里红掉 —— 顺序反过来就是在悄悄扩大职责 |
-| [`http_shell/`](http_shell/) | **可选的那层壳不发明东西**:八个端点各对应一个库方法、`POST` 同样是有则接上、错误体是库异常的投影(`RemoteTmuxd` 能还原成同一个异常类)、`Idempotency-Key` 防重放(断言的是**屏幕上只出现一次**)、返回的 `url` 指向 ttyd 而不是 API 那个口 |
-| [`cli_shell/`](cli_shell/) | **壳本身**:`--` 是标点不是命令的第一个词(这条曾经真写错过)、退出码是接口、错误走 stderr、配置文件只是构造参数的另一种写法、`-H` 下拒绝生命周期命令 |
+| [`nothing_reads/`](nothing_reads/) | **守门测试:断言“没有”**。没有 capture / run / stream / 事件流 / rename / 远程客户端,库也不自己起 HTTP server;**`import tmuxd` 不把 FastAPI 拖进来**(零依赖全靠这条)。要加,先改 `works/03-server.md` 的论证再让这里红掉 |
+| [`control_api/`](control_api/) | **CLI 打的那个口不发明东西**:七个端点各对应一个库方法、`POST` 同样是有则接上、错误体是库异常的投影、`Idempotency-Key` 防重放(断言的是**屏幕上只出现一次**)、返回的 `url` 指向 ttyd 而不是管控口;外加“把 router 挂进别人的 app” |
+| [`cli_shell/`](cli_shell/) | **CLI 离不开 server**:没起时如实说(而且报的是管控口不是 ttyd 口)、`-t`/`--id` 五种写法同路、`--` 是标点不是命令的第一个词(这条曾经真写错过)、退出码是接口、`stop` 停门面不停屋子 |
 
 ## 共享 fixture / helper(`conftest.py`)
 
-- `instance` —— 一个 `Tmuxd`,独立 tmux socket 和状态目录,**不起 ttyd**(大多数场景够用)
-- `served` —— 同上,但真的在空闲端口上起 ttyd
+- `instance` —— 一个**完整的** `Tmuxd`:独立 tmux socket、状态目录,以及一个真的 ttyd。
+  没有“只起一半”的选项 —— `tmuxd = tmux + ttyd`,缺一个都不成立
+- `served` —— `instance` 的别名,留着少改一堆用例
 - `screen(t, sid)` —— 读屏幕。**库刻意不提供这个能力**,测试只好自己下到 tmux 那一层;
   这恰恰是那条设计线的注脚:测试是唯一真正需要读屏幕的调用方
 - `wait_for(t, sid, needle)` / `wait_until(pred)` —— 终端是异步的,断言前必须等
@@ -38,13 +39,13 @@ fixture 来源)和 `test.py`。相关的用例合并在一个场景下,跟「按
 ## 跑
 
 ```bash
-pip install -e ".[dev]"
-pytest                              # 全部,约 12 秒
+pip install -e ".[dev]"             # 含 fastapi + uvicorn,控制口和 CLI 要用
+pytest                              # 全部,约 45 秒
 pytest tests/exact_targeting -v     # 单个场景
 pytest -k prefix                    # 按名字挑
 ```
 
-需要机器上有 `tmux`(≥3.0)和 `ttyd`。没有 ttyd 时,依赖它的用例自动跳过。
+需要机器上有 `tmux`(≥3.0)和 `ttyd`。缺 ttyd 或缺 `[server]` 依赖时,相关用例自动跳过。
 
 ## 加新场景
 

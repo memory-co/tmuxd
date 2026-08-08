@@ -15,10 +15,13 @@ tmuxd **不提供任何读取终端内容的接口**:没有 `capture`、没有 `
 所以这里把"没有"写成断言:
 
 1. **库**:`Session` 上没有 `capture` / `run` / `stream` / `resize` / `split` /
-   `wait_for`;`Tmuxd` 上也没有。
-2. **HTTP 壳**:这些路由一律 404,而且**一条 WebSocket 都没有**(`/api/events` 也 404)。
-3. **CLI**:子命令表里没有 `capture` / `run` / `wait` / `stream` / `watch`。
-4. **`RemoteSession` 的接口和 `Session` 完全一致** —— 远程那头也不会多出读的能力。
+   `wait_for`;`Tmuxd` 上也没有,而且它**不自己起 HTTP server**(`serve_http` 没了 ——
+   嵌进来的人已经有一个 app 了,库该给 router)。
+2. **控制口**:这些路由一律 404,恰好七条路由,**一条 WebSocket 都没有**。
+3. **CLI**:子命令表里没有 `capture` / `run` / `wait` / `stream` / `watch`,也没有 `rename`。
+4. **没有远程客户端**(`RemoteTmuxd` / `tmuxd.remote` 都不存在)—— 远端用 ssh。
+5. **`import tmuxd` 不把 FastAPI 拖进来** —— 基础安装零依赖全靠这条,
+   而它最容易在某次"顺手 import 一下"里被破坏。
 
 哪天真的要加,先改 `docs/v1/works/03-server.md` 的论证,再让这里的用例红掉 ——
 **顺序反过来就是在悄悄扩大这一层的职责**。

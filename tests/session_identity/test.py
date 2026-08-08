@@ -56,6 +56,7 @@ def test_has_answers_without_creating(instance):
         ("", "空"),
         ("a.b", "tmux 会话名不能含点"),
         ("a:b", "tmux 会话名不能含冒号"),
+        ("a/b", "斜杠在 URL 路径段里活不下来"),
         ("-lead", "会被当成命令行选项"),
         ("x\ny", "控制字符会把任何列表打乱"),
         ("z" * 201, "太长"),
@@ -77,23 +78,16 @@ def test_generated_ids_count_up_like_tmux(instance):
     assert instance.session().id == "1"
 
 
-def test_rename(instance):
-    instance.session(id="before", cmd="cat")
-    s = instance.get("before")
-    s.rename("after")
+def test_there_is_no_rename(instance):
+    """id 是身份不是标签。
 
-    assert s.id == "after"
-    assert instance.has("after")
-    assert not instance.has("before")
-    assert instance.get("after").cmd == "cat"       # 记录跟着搬了家
+    调用方靠"同一个 id 指向同一个现场"重入 —— 改名之后它按同样规则算出的还是
+    原来那个 id,却找不到东西了。rename 正好破坏 id 存在的唯一理由
+    (works/02-session.md §6.1)。要换 id:kill 掉再建。
+    """
+    from tmuxd import Session
 
-
-def test_rename_onto_a_taken_id_refuses(instance):
-    instance.session(id="a", cmd="cat")
-    instance.session(id="b", cmd="cat")
-    with pytest.raises(SessionExists):
-        instance.get("a").rename("b")
-    assert instance.has("a")                        # 原地不动
+    assert not hasattr(Session, "rename")
 
 
 # -- cwd / cmd / env 真的传到了 tmux ---------------------------------------

@@ -26,9 +26,13 @@ DEFAULT_HISTORY = 10000
 DEFAULT_GC_TTL = 7 * 24 * 3600
 
 # Characters tmux cannot carry in a session name, plus a few we refuse on our
-# own account: a leading dash would be read as an option, and control
-# characters make a mess of every listing that ever prints them.
-_FORBIDDEN = set(".:\n\r\t\0")
+# own account: a leading dash would be read as an option, control characters
+# make a mess of every listing that prints them, and a slash cannot survive a
+# URL path segment -- ASGI servers decode %2F back to "/" before routing, so
+# an id containing one would be unaddressable over the control API. Ids are
+# keys the caller computes; a slash buys nothing and costs correctness in the
+# path, in ?arg= and in file names.
+_FORBIDDEN = set("./:\n\r\t\0")
 
 
 def _env(name, default=None):
@@ -52,7 +56,6 @@ class Tmuxd:
         state_dir=None,
         gc_ttl=None,
         url_host=None,
-        start_ttyd=True,
     ):
         self.socket_name = socket or _env("TMUXD_SOCKET", DEFAULT_SOCKET)
         if self.socket_name == "default":
@@ -63,8 +66,11 @@ class Tmuxd:
         self.tmux_socket = self.socket_name if self.socket_name == DEFAULT_SOCKET \
             else "%s-%s" % (DEFAULT_SOCKET, self.socket_name)
 
-        port = port if port is not None else _env("TMUXD_PORT")
-        self.port = None if port in (None, "none", "off") else int(port)
+        # tmuxd = tmux + ttyd. There is no "just the multiplexer" mode: a shell
+        # that outlives its connection is tmux's half, and a person getting in
+        # from a browser is ttyd's, and without the second one this is a tmux
+        # wrapper rather than tmuxd (works/01-library.md §2).
+        self.port = int(port if port is not None else _env("TMUXD_PORT", DEFAULT_PORT))
         self.bind = bind or _env("TMUXD_BIND", "127.0.0.1")
         self.token = token if token is not None else _env("TMUXD_TOKEN")
         self.url_host = url_host or _env("TMUXD_URL_HOST")
@@ -95,19 +101,16 @@ class Tmuxd:
         self._conf = self._render_conf()
         self._tmux = _tmux.Tmux(self.tmux_bin, self.tmux_socket, self._conf)
 
-        self._ttyd = None
-        self._http = None
-        if self.port is not None and start_ttyd:
-            self._ttyd = _ttyd.ensure(
-                binary=_ttyd.find_binary(ttyd_bin),
-                port=self.port,
-                bind=self.bind,
-                token=self.token,
-                attach_script=self._attach_script(),
-                tmux_socket=self.tmux_socket,
-                tmux_bin=self.tmux_bin,
-                state_path=os.path.join(self.state_dir, "ttyd-%d.json" % self.port),
-            )
+        self._ttyd = _ttyd.ensure(
+            binary=_ttyd.find_binary(ttyd_bin),
+            port=self.port,
+            bind=self.bind,
+            token=self.token,
+            attach_script=self._attach_script(),
+            tmux_socket=self.tmux_socket,
+            tmux_bin=self.tmux_bin,
+            state_path=os.path.join(self.state_dir, "ttyd-%d.json" % self.port),
+        )
 
     # -- setup ----------------------------------------------------------
 
@@ -246,42 +249,12 @@ class Tmuxd:
     # -- entrance ---------------------------------------------------------
 
     def url_for(self, sid):
-        if self.port is None:
-            return None
         host = self.url_host or (
             "127.0.0.1" if self.bind in ("0.0.0.0", "::", "") else self.bind
         )
         return "http://%s:%d/?arg=%s" % (host, self.port, quote(sid, safe=""))
 
     # -- introspection ----------------------------------------------------
-
-    def _ttyd_report(self):
-        """What is on the ttyd port -- ours, someone else's, or nothing.
-
-        Reported even when this instance did not start ttyd (the CLI's read
-        commands never do), because "is the door open" is a question worth
-        answering without opening one.
-        """
-        if self.port is None:
-            return None
-        if self._ttyd is not None:
-            return {
-                "version": self._ttyd.version,
-                "port": self._ttyd.port,
-                "bind": self._ttyd.bind,
-                "pid": self._ttyd.pid,
-                "owned": self._ttyd.owned,
-                "listening": True,
-            }
-        recorded = _ttyd._read(os.path.join(self.state_dir, "ttyd-%d.json" % self.port)) or {}
-        return {
-            "version": recorded.get("version"),
-            "port": self.port,
-            "bind": self.bind,
-            "pid": recorded.get("pid"),
-            "owned": False,
-            "listening": _ttyd.port_open(self.bind, self.port),
-        }
 
     def info(self):
         sessions = self.sessions()
@@ -291,7 +264,13 @@ class Tmuxd:
             "version": __import__("tmuxd").__version__,
             "socket": self.socket_name,
             "state_dir": self.state_dir,
-            "ttyd": self._ttyd_report(),
+            "ttyd": {
+                "version": self._ttyd.version,
+                "port": self._ttyd.port,
+                "bind": self._ttyd.bind,
+                "pid": self._ttyd.pid,
+                "owned": self._ttyd.owned,
+            },
             "tmux": {
                 "bin": self.tmux_bin,
                 "version": self.tmux_version,
@@ -308,23 +287,12 @@ class Tmuxd:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def serve_http(self, port, *, bind=None, token=None):
-        """Expose the library over HTTP. Off unless you ask (works/03 §1)."""
-        from .http import HttpShell
-
-        self._http = HttpShell(self, port=port, bind=bind or self.bind, token=token)
-        self._http.start()
-        return self._http
-
     def kill_tmux_server(self):
         """Destroy every session in this pool. Explicit only, never automatic."""
         self._tmux.kill_server()
 
     def close(self):
         """Take down what we started. Sessions are not ours to end."""
-        if self._http is not None:
-            self._http.stop()
-            self._http = None
         if self._ttyd is not None:
             self._ttyd.stop()
             self._ttyd = None

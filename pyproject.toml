@@ -44,7 +44,11 @@ Issues = "https://github.com/memory-co/tmuxd/issues"
 tmuxd = "tmuxd.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+# The CLI and the server are one thing: a CLI command is too short-lived to
+# hold ttyd or session state, so it talks to `tmuxd serve` over the control
+# port. Embedding the library needs none of this, which is why it is an extra.
+server = ["fastapi>=0.110", "uvicorn>=0.27"]
+dev = ["pytest>=7", "fastapi>=0.110", "uvicorn>=0.27"]
 
 [tool.setuptools]
 packages = ["tmuxd"]

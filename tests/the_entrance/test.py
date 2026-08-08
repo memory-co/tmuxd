@@ -52,18 +52,15 @@ def test_the_url_opens(served):
 
 
 def test_the_url_percent_encodes_the_id(served):
-    assert served.session(id="a b/c").url.endswith("/?arg=a%20b%2Fc")
+    """空格得编码。斜杠不用操心 —— id 根本不许带([session_identity](../session_identity/))。"""
+    assert served.session(id="a b c").url.endswith("/?arg=a%20b%20c")
 
 
-def test_the_url_needs_no_live_python(tmp_path, request):
-    """地址只是个字符串,算它不需要门开着 —— CLI 的读命令就靠这条。"""
-    name = pool_name(request, prefix="url")
-    t = Tmuxd(port=12345, socket=name, state_dir=str(tmp_path), start_ttyd=False)
-    try:
-        assert t._ttyd is None
-        assert t.url_for("whatever") == "http://127.0.0.1:12345/?arg=whatever"
-    finally:
-        t.close()
+def test_the_url_is_just_a_string(served):
+    """算一个地址不需要那个会话存在 —— 它没有查询任何东西。"""
+    assert served.url_for("never-created") == \
+        "http://127.0.0.1:%d/?arg=never-created" % served.port
+    assert served.has("never-created") is False
 
 
 # -- 谁进得来 ---------------------------------------------------------------

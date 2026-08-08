@@ -28,7 +28,7 @@ def test_the_session_outlives_the_object_that_made_it(instance, tmp_path):
     name = instance.socket_name
 
     instance.close()                      # 门面收摊
-    revived = Tmuxd(port=None, socket=name, state_dir=str(tmp_path))
+    revived = Tmuxd(port=free_port(), socket=name, state_dir=str(tmp_path))
     try:
         assert revived.has("survivor")
     finally:
@@ -42,7 +42,7 @@ def test_and_it_still_remembers_where_it_started(instance, tmp_path):
     instance.session(id="survivor", cwd=str(proj), cmd="cat")
     name = instance.socket_name
 
-    revived = Tmuxd(port=None, socket=name, state_dir=str(tmp_path))
+    revived = Tmuxd(port=free_port(), socket=name, state_dir=str(tmp_path))
     try:
         s = revived.get("survivor")
         assert (s.cwd, s.cmd, s.status) == (str(proj), "cat", "alive")
@@ -104,7 +104,7 @@ def test_but_the_sessions_do_not(tmp_path, request):
         child.wait(timeout=5)
         assert wait_until(lambda: not pid_alive(ttyd_pid))
 
-        after = Tmuxd(port=None, socket=name, state_dir=str(tmp_path))
+        after = Tmuxd(port=free_port(), socket=name, state_dir=str(tmp_path))
         assert after.has("held"), "门面走了,屋里的人不该跟着走"
     finally:
         child.kill()
@@ -129,7 +129,7 @@ def test_the_context_manager_is_the_same_promise(tmp_path, request):
             ttyd_pid = t._ttyd.pid
         assert wait_until(lambda: not pid_alive(ttyd_pid))     # 门关了
 
-        after = Tmuxd(port=None, socket=name, state_dir=str(tmp_path))
+        after = Tmuxd(port=free_port(), socket=name, state_dir=str(tmp_path))
         try:
             assert after.has("job-1")                          # 人还在
         finally:

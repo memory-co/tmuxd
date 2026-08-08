@@ -1,10 +1,16 @@
-"""The command line -- the third shell around the library.
+"""The command line -- and the server it cannot work without.
 
-Locally it calls the library directly; ``-H`` is the only mode that speaks
-HTTP. Eleven commands, eleven library calls (works/04-cli.md §9).
+`tmuxd ls` is a process that lives for tens of milliseconds. It can hold
+neither ttyd (which would die with it) nor session state, so it does not
+construct a :class:`~tmuxd.core.Tmuxd` at all -- it asks the one that can,
+over the control port (works/03-server.md §1).
+
+That client is stdlib ``urllib``: seven JSON endpoints need nothing more, and
+the base install stays dependency-free. FastAPI and uvicorn live on the other
+side of the wire, in ``tmuxd[server]``.
 
 Exit codes matter more than the text: 0 fine, 2 usage, 3 no such session,
-4 wrong state, 5 cannot reach a remote, 6 the tmux server is gone.
+4 wrong state, 5 reserved, 6 the tmux server is gone.
 """
 
 import argparse
@@ -14,31 +20,33 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 
 from . import __version__
-from .errors import (
-    NoSuchSession,
-    PlatformError,
-    SessionError,
-    TmuxdError,
-    TmuxGone,
-    Unauthorized,
-    Unreachable,
-)
+from .errors import from_code
 
 EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_USAGE = 2
 EXIT_NO_SESSION = 3
 EXIT_STATE = 4
-EXIT_UNREACHABLE = 5
+# 5 was "cannot reach a remote tmuxd" before -H was removed. Left unused: a
+# published exit code should not change meaning under someone's script.
 EXIT_TMUX_GONE = 6
 
+DEFAULT_PORT = 7681
+DEFAULT_CONTROL_PORT = 7682
 CONFIG_PATH = os.environ.get("TMUXD_CONFIG") or os.path.expanduser("~/.tmuxd.conf")
-REMOTE_ONLY_MESSAGE = (
-    "not available against a remote tmuxd -- ttyd's lifetime belongs to the "
-    "process over there"
-)
+
+EXIT_FOR = {
+    "no_such_session": EXIT_NO_SESSION,
+    "session_exists": EXIT_STATE,
+    "bad_id": EXIT_STATE,
+    "port_in_use": EXIT_STATE,
+    "unauthorized": EXIT_FAIL,
+    "tmux_gone": EXIT_TMUX_GONE,
+}
 
 
 # -- config ---------------------------------------------------------------
@@ -66,306 +74,395 @@ def read_config(path=None):
     return values
 
 
-# -- connecting -----------------------------------------------------------
+class Settings:
+    """Where an instance lives, resolved once per command."""
+
+    def __init__(self, args):
+        conf = read_config()
+        self.socket = args.socket or os.environ.get("TMUXD_SOCKET") \
+            or conf.get("socket") or "tmuxd"
+        self.port = int(args.port or os.environ.get("TMUXD_PORT")
+                        or conf.get("port") or DEFAULT_PORT)
+        self.control_port = int(
+            getattr(args, "control_port", None) or os.environ.get("TMUXD_CONTROL_PORT")
+            or conf.get("control-port") or DEFAULT_CONTROL_PORT)
+        self.bind = args.bind or os.environ.get("TMUXD_BIND") or conf.get("bind") \
+            or "127.0.0.1"
+        root = os.path.expanduser(args.state_dir or os.environ.get("TMUXD_STATE_DIR")
+                                  or conf.get("state-dir") or "~/.tmuxd")
+        self.state_dir = os.path.join(root, self.socket)
+        self.conf = conf
+        self._token = args.token or os.environ.get("TMUXD_TOKEN") or conf.get("token")
+
+    @property
+    def token(self):
+        if self._token:
+            return self._token
+        try:
+            with open(os.path.join(self.state_dir, "token"), encoding="utf-8") as fh:
+                return fh.read().strip() or None
+        except OSError:
+            return None
+
+    @property
+    def base_url(self):
+        host = "127.0.0.1" if self.bind in ("0.0.0.0", "::", "") else self.bind
+        return "http://%s:%d" % (host, self.control_port)
+
+    @property
+    def daemon_file(self):
+        return os.path.join(self.state_dir, "daemon.json")
+
+    @property
+    def tmux_socket(self):
+        return self.socket if self.socket == "tmuxd" else "tmuxd-%s" % self.socket
 
 
-def build(args, *, start_ttyd=False):
-    """A local Tmuxd, or a RemoteTmuxd when -H was given."""
-    if args.host:
-        from .remote import RemoteTmuxd
-
-        return RemoteTmuxd(args.host, token=args.token or os.environ.get("TMUXD_TOKEN"))
-
-    from .core import Tmuxd
-
-    conf = read_config()
-    port = args.port or conf.get("port")
-    return Tmuxd(
-        port=int(port) if port else None,
-        bind=args.bind or conf.get("bind") or None,
-        token=args.token or conf.get("token") or None,
-        socket=args.socket or conf.get("socket") or None,
-        history_limit=conf.get("history-limit"),
-        tmux_bin=conf.get("tmux-bin") or None,
-        state_dir=args.state_dir or conf.get("state-dir") or None,
-        start_ttyd=start_ttyd,
-    )
+# -- talking to the server -------------------------------------------------
 
 
-def daemon_file(t):
-    return os.path.join(t.state_dir, "daemon.json")
+class NoServer(Exception):
+    pass
 
 
-# -- commands -------------------------------------------------------------
+class Api:
+    """stdlib HTTP client. Seven JSON endpoints need nothing more."""
+
+    def __init__(self, settings, timeout=10.0):
+        self.s = settings
+        self.timeout = timeout
+
+    def call(self, method, path, body=None, headers=None):
+        data = None
+        head = {"Accept": "application/json"}
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            head["Content-Type"] = "application/json"
+        if self.s.token:
+            head["Authorization"] = "Bearer %s" % self.s.token
+        head.update(headers or {})
+
+        req = urllib.request.Request(self.s.base_url + path, data=data,
+                                     headers=head, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            payload = _json_or_none(exc.read())
+            if payload and "error" in payload:
+                raise from_code(payload["error"], payload.get("message", ""),
+                                payload.get("details"))
+            raise NoServer("HTTP %d from %s" % (exc.code, self.s.base_url))
+        except urllib.error.URLError:
+            raise NoServer(
+                "no server running (nothing listening on %s). Start one with "
+                "`tmuxd start`." % self.s.base_url.replace("http://", ""))
+        return _json_or_none(raw) or {}
+
+    def get(self, path):
+        return self.call("GET", path)
+
+    def post(self, path, body=None, headers=None):
+        return self.call("POST", path, body or {}, headers)
+
+    def delete(self, path):
+        return self.call("DELETE", path)
+
+
+def _json_or_none(raw):
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def _quote(sid):
+    from urllib.parse import quote
+
+    return quote(sid, safe="")
+
+
+# -- the server process ----------------------------------------------------
 
 
 def cmd_serve(args):
-    from .core import Tmuxd
-
-    conf = read_config()
-    port = args.port or conf.get("port") or 7681
-    t = Tmuxd(
-        port=int(port),
-        bind=args.bind or conf.get("bind") or None,
-        token=args.token or conf.get("token") or None,
-        socket=args.socket or conf.get("socket") or None,
-        history_limit=conf.get("history-limit"),
-        state_dir=args.state_dir or conf.get("state-dir") or None,
-    )
-    with open(daemon_file(t), "w", encoding="utf-8") as fh:
-        json.dump({"pid": os.getpid(), "port": t.port, "started_at": time.time()}, fh)
-
-    if args.http_port:
-        t.serve_http(args.http_port, token=t.token)
-        print("http:  http://%s:%d/api" % (t.bind, args.http_port))
-
-    _banner(t)
+    s = Settings(args)
     try:
-        while True:
-            time.sleep(3600)
+        from .core import Tmuxd
+        from .server import serve
+    except ModuleNotFoundError as exc:
+        return _fail(str(exc), EXIT_FAIL)
+
+    t = Tmuxd(
+        port=s.port, bind=s.bind, token=s.token, socket=s.socket,
+        history_limit=s.conf.get("history-limit"),
+        tmux_bin=s.conf.get("tmux-bin") or None,
+        state_dir=os.path.dirname(s.state_dir),
+    )
+    if t.token:
+        _write(os.path.join(t.state_dir, "token"), t.token, mode=0o600)
+    with open(s.daemon_file, "w", encoding="utf-8") as fh:
+        json.dump({"pid": os.getpid(), "port": t.port,
+                   "control_port": s.control_port, "started_at": time.time()}, fh)
+
+    _banner(t, s.control_port)
+    try:
+        serve(t, control_port=s.control_port, bind=s.bind, token=t.token)
     except KeyboardInterrupt:
         pass
     finally:
         t.close()
-        try:
-            os.unlink(daemon_file(t))
-        except OSError:
-            pass
+        _unlink(s.daemon_file)
     return EXIT_OK
 
 
-def _banner(t):
-    print("tmuxd %s" % __version__)
-    print("ttyd:  http://%s:%d   %s" % (
+def _banner(t, control_port):
+    # Block-buffered under a pipe or systemd, so an unflushed banner is a
+    # banner nobody sees until the process exits.
+    print("tmuxd %s" % __version__, flush=True)
+    print("ttyd:     http://%s:%d        %s" % (
         t.bind, t.port, ("token=%s…" % t.token[:8]) if t.token else "no token (open)"))
+    print("control:  http://%s:%d/api    (CLI 打这个)" % (t.bind, control_port))
     info = t.info()["tmux"]
-    print("tmux:  %s %s   socket=%s (dedicated)   %s" % (
+    print("tmux:     %s %s   socket=%s (dedicated)   %s" % (
         info["bin"], info["version"], info["socket"],
-        "server running" if info["running"] else "server not started yet"))
+        "server running" if info["running"] else "server not started yet"), flush=True)
 
 
 def cmd_start(args):
-    t = build(args, start_ttyd=False)
-    _reject_remote(t)
-    path = daemon_file(t)
-    existing = _read_json(path)
+    s = Settings(args)
+    existing = _read_json(s.daemon_file)
     if existing and _alive(existing.get("pid")):
         print("already running (pid %d)" % existing["pid"])
         return EXIT_OK
 
     # Global flags come before the subcommand -- argparse will not take them
-    # afterwards, and getting that wrong makes `start` fail in a way whose
-    # only trace is the daemon log.
+    # afterwards, and getting that wrong makes `start` fail in a way whose only
+    # trace is the daemon log.
     argv = [sys.executable, "-m", "tmuxd"]
-    for flag, value in (
-        ("-L", args.socket), ("--port", args.port), ("--bind", args.bind),
-        ("--token", args.token), ("--state-dir", args.state_dir),
-    ):
+    for flag, value in (("-L", args.socket), ("--port", args.port),
+                        ("--control-port", args.control_port), ("--bind", args.bind),
+                        ("--token", args.token), ("--state-dir", args.state_dir)):
         if value:
             argv += [flag, str(value)]
     argv.append("serve")
-    if args.http_port:
-        argv += ["--http-port", str(args.http_port)]
 
-    log = open(os.path.join(t.state_dir, "daemon.log"), "ab")
+    os.makedirs(s.state_dir, exist_ok=True)
+    log_path = os.path.join(s.state_dir, "daemon.log")
+    log = open(log_path, "ab")
     subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
 
-    deadline = time.time() + 10
+    api = Api(s)
+    deadline = time.time() + 15
     while time.time() < deadline:
-        record = _read_json(path)
-        if record and _alive(record.get("pid")):
-            _banner(build(args, start_ttyd=False))
-            return EXIT_OK
-        time.sleep(0.1)
+        try:
+            api.get("/api/health")
+        except NoServer:
+            time.sleep(0.1)
+            continue
+        return cmd_info(args)
 
-    sys.stderr.write("tmuxd did not come up. Tail of %s:\n" % log.name)
-    sys.stderr.write(_tail(log.name))
+    sys.stderr.write("tmuxd did not come up. Tail of %s:\n%s" % (log_path, _tail(log_path)))
     return EXIT_FAIL
 
 
 def cmd_stop(args):
-    t = build(args, start_ttyd=False)
-    _reject_remote(t)
-    record = _read_json(daemon_file(t))
+    s = Settings(args)
+    record = _read_json(s.daemon_file)
     if not record or not _alive(record.get("pid")):
         print("not running")
         return EXIT_OK
+
+    live = 0
+    try:
+        live = sum(1 for x in Api(s).get("/api/sessions")["sessions"]
+                   if x.get("status") == "alive")
+    except (NoServer, KeyError):
+        pass
+
     os.kill(record["pid"], 15)
-    for _ in range(50):
+    for _ in range(80):
         if not _alive(record["pid"]):
             break
         time.sleep(0.1)
-    live = [s for s in t.sessions() if s.alive]
-    print("ttyd stopped. %d session(s) still running (tmuxd start brings the door back)."
-          % len(live))
+    print("server 已停。%d 个会话仍在运行(tmuxd start 回来即可)。" % live)
     return EXIT_OK
 
 
 def cmd_status(args):
-    t = build(args, start_ttyd=False)
-    _reject_remote(t)
-    record = _read_json(daemon_file(t))
+    s = Settings(args)
+    record = _read_json(s.daemon_file)
     pid = record.get("pid") if record else None
     running = bool(pid and _alive(pid))
-    listening = False
-    if t.port:
-        from .ttyd import port_open
 
-        listening = port_open(t.bind, t.port)
+    control_up = ttyd_up = False
+    try:
+        Api(s, timeout=3).get("/api/health")
+        control_up = True
+    except NoServer:
+        pass
+    except Exception:
+        control_up = True
+    from .ttyd import port_open
+
+    ttyd_up = port_open(s.bind, s.port)
+
     if args.json:
-        print(json.dumps({"daemon": running, "pid": pid, "port": t.port,
-                          "listening": listening}, indent=2))
+        print(json.dumps({"server": running, "pid": pid, "ttyd_port": s.port,
+                          "control_port": s.control_port, "ttyd": ttyd_up,
+                          "control": control_up}, indent=2))
     else:
-        print("daemon:    %s" % ("running (pid %d)" % pid if running else "not running"))
-        print("ttyd port: %s" % ("listening on %d" % t.port if listening else "not listening"))
-    return EXIT_OK if running or listening else EXIT_FAIL
+        print("server:   %s" % ("running (pid %d)" % pid if running else "not running"))
+        print("ttyd:     %s" % ("listening on %d" % s.port if ttyd_up else "not listening"))
+        print("control:  %s" % ("listening on %d" % s.control_port if control_up
+                                else "not listening"))
+    return EXIT_OK if running or control_up else EXIT_FAIL
 
 
 def cmd_info(args):
-    t = build(args, start_ttyd=False)
-    info = t.info()
+    s = Settings(args)
+    info = Api(s).get("/api/info")
     if args.json:
         print(json.dumps(info, indent=2))
         return EXIT_OK
-    print("tmuxd   %s" % info["version"])
-    ttyd = info.get("ttyd")
-    if not ttyd:
-        print("ttyd    no port configured")
-    elif not ttyd["listening"]:
-        print("ttyd    not running (port %s would be the entrance)" % ttyd["port"])
-    else:
-        print("ttyd    %s  port=%s  owned=%s" % (
-            ttyd["version"] or "?", ttyd["port"], ttyd["owned"]))
-    print("tmux    %(version)s  %(bin)s  socket=%(socket)s  running=%(running)s" % info["tmux"])
-    print("sessions %(total)d total  %(alive)d alive  %(exited)d exited  %(external)d external"
-          % info["sessions"])
+    print("tmuxd     %s" % info["version"])
+    ttyd = info.get("ttyd") or {}
+    print("ttyd      %s  port=%s  owned=%s" % (
+        ttyd.get("version") or "?", ttyd.get("port"), ttyd.get("owned")))
+    print("control   port=%s" % (info.get("control") or {}).get("port"))
+    print("tmux      %(version)s  %(bin)s  socket=%(socket)s  running=%(running)s"
+          % info["tmux"])
+    print("sessions  %(total)d total  %(alive)d alive  %(exited)d exited  "
+          "%(external)d external" % info["sessions"])
     return EXIT_OK
 
 
+# -- sessions --------------------------------------------------------------
+
+
 def cmd_new(args):
-    t = build(args)
+    s = Settings(args)
     # argparse.REMAINDER hands back the "--" separator too; it is punctuation,
     # not the first word of the command.
     words = list(args.command or [])
     if words and words[0] == "--":
         words = words[1:]
-    cmd = " ".join(shlex.quote(part) for part in words) if words else None
-    env = dict(pair.split("=", 1) for pair in args.env) if args.env else None
-    session = t.session(id=args.id, cwd=args.cwd, cmd=cmd, env=env)
+    body = {
+        "id": args.id,
+        "cwd": os.path.abspath(os.path.expanduser(args.cwd)) if args.cwd else None,
+        "cmd": " ".join(shlex.quote(w) for w in words) if words else None,
+        "env": dict(pair.split("=", 1) for pair in args.env) if args.env else None,
+    }
+    session = Api(s).post("/api/sessions", body)
     if args.json:
-        print(json.dumps(session.to_dict(), indent=2))
+        print(json.dumps(session, indent=2))
     else:
-        print("%s  →  %s" % (session.id, session.url or "(no ttyd port configured)"))
+        print("%s  →  %s" % (session["id"], session["url"]))
     return EXIT_OK
 
 
 def cmd_ls(args):
-    t = build(args)
-    sessions = t.sessions()
+    s = Settings(args)
+    sessions = Api(s).get("/api/sessions")["sessions"]
     if args.json:
-        print(json.dumps([s.to_dict() for s in sessions], indent=2))
+        print(json.dumps(sessions, indent=2))
         return EXIT_OK
     if args.format:
-        for s in sessions:
-            print(_format(args.format, s))
+        for item in sessions:
+            print(_format(args.format, item))
         return EXIT_OK
-    for s in sessions:
-        status = s.status
-        if status == "alive":
+    for item in sessions:
+        if item["status"] == "alive":
+            n = item["clients"]
             print("%-20s alive   %d client%s  %-8s %s" % (
-                s.id, s.clients, " " if s.clients == 1 else "s",
-                s.current_command or "-", s.cwd or "-"))
+                item["id"], n, " " if n == 1 else "s",
+                item.get("current_command") or "-", item.get("cwd") or "-"))
         else:
-            print("%-20s exited  %s" % (s.id, "swept in %d days" % (t.gc_ttl // 86400)))
+            print("%-20s exited" % item["id"])
     return EXIT_OK
 
 
 def cmd_url(args):
-    t = build(args)
-    session = t.get(args.id)
-    url = session.url
-    if not url:
-        sys.stderr.write("no ttyd port configured for this instance\n")
-        return EXIT_FAIL
+    s = Settings(args)
+    url = Api(s).get("/api/sessions/" + _quote(args.id))["url"]
     print(url)
     if args.open:
-        if not args.host:
-            from .ttyd import port_open
-
-            if not port_open(t.bind, t.port):
-                sys.stderr.write(
-                    "warning: nothing is listening on port %d -- start one with "
-                    "`tmuxd start`\n" % t.port)
-        opener = read_config().get("open-cmd")
+        opener = s.conf.get("open-cmd")
         argv = (shlex.split(opener.replace("%u", url)) if opener
-                else ["xdg-open" if sys.platform != "darwin" else "open", url])
+                else ["open" if sys.platform == "darwin" else "xdg-open", url])
         subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return EXIT_OK
 
 
 def cmd_kill(args):
-    t = build(args)
-    clients = t.get(args.id).kill()
+    s = Settings(args)
+    out = Api(s).delete("/api/sessions/" + _quote(args.id))
+    clients = out.get("clients") or 0
     print("killed %s%s" % (args.id,
                            " (%d client(s) thrown out)" % clients if clients else ""))
     return EXIT_OK
 
 
-def cmd_rename(args):
-    t = build(args)
-    t.get(args.id).rename(args.new_id)
-    print("%s → %s" % (args.id, args.new_id))
+def cmd_has(args):
+    s = Settings(args)
+    from .errors import NoSuchSession
+
+    try:
+        Api(s).get("/api/sessions/" + _quote(args.id))
+    except NoSuchSession:
+        return EXIT_NO_SESSION
     return EXIT_OK
 
 
-def cmd_has(args):
-    t = build(args)
-    return EXIT_OK if t.has(args.id) else EXIT_NO_SESSION
-
-
 def cmd_send(args):
-    t = build(args)
-    t.get(args.id).send(args.text, enter=args.enter)
+    s = Settings(args)
+    Api(s).post("/api/sessions/%s/keys" % _quote(args.id),
+                {"text": args.text, "enter": bool(args.enter)})
     print("✓ sent")
     return EXIT_OK
 
 
 def cmd_keys(args):
-    t = build(args)
-    t.get(args.id).send_key(*args.keys)
+    s = Settings(args)
+    Api(s).post("/api/sessions/%s/keys" % _quote(args.id), {"keys": list(args.keys)})
     print("✓ sent")
     return EXIT_OK
 
 
 def cmd_kill_server(args):
-    t = build(args)
-    _reject_remote(t)
+    """Local on purpose: tearing the pool down has to work when the server is
+    already down, which is exactly when you reach for it."""
+    s = Settings(args)
     if not args.tmux:
-        sys.stderr.write("pass --tmux to confirm: this destroys every session in "
-                         "this pool\n")
-        return EXIT_USAGE
+        return _fail("pass --tmux to confirm: this destroys every session in "
+                     "this pool", EXIT_USAGE)
     if sys.stdin.isatty() and not args.yes:
-        answer = input("kill the tmux server for socket %s? [y/N] " % t.tmux_socket)
-        if answer.strip().lower() not in ("y", "yes"):
+        if input("kill the tmux server for socket %s? [y/N] "
+                 % s.tmux_socket).strip().lower() not in ("y", "yes"):
             return EXIT_OK
-    t.kill_tmux_server()
-    print("tmux server killed (socket %s). Your own tmux is untouched." % t.tmux_socket)
+    from .tmux import find_binary
+
+    subprocess.run([find_binary(s.conf.get("tmux-bin")), "-L", s.tmux_socket,
+                    "kill-server"], capture_output=True)
+    print("tmux server killed (socket %s). Your own tmux is untouched." % s.tmux_socket)
     return EXIT_OK
 
 
-# -- helpers --------------------------------------------------------------
+# -- helpers ---------------------------------------------------------------
 
 
-def _format(spec, session):
+def _format(spec, item):
     values = {
-        "#{session_id}": session.id,
-        "#{session_name}": session.id,
-        "#{session_status}": session.status,
-        "#{session_attached}": str(session.clients),
-        "#{session_cwd}": session.cwd or "",
-        "#{session_cmd}": session.cmd or "",
-        "#{session_url}": session.url or "",
-        "#{pane_current_command}": session.current_command or "",
+        "#{session_id}": item["id"],
+        "#{session_name}": item["id"],
+        "#{session_status}": item["status"],
+        "#{session_attached}": str(item.get("clients") or 0),
+        "#{session_cwd}": item.get("cwd") or "",
+        "#{session_cmd}": item.get("cmd") or "",
+        "#{session_url}": item.get("url") or "",
+        "#{pane_current_command}": item.get("current_command") or "",
     }
     out = spec
     for key, value in values.items():
@@ -379,6 +476,19 @@ def _read_json(path):
             return json.load(fh)
     except (OSError, ValueError):
         return None
+
+
+def _write(path, text, mode=0o600):
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.chmod(path, mode)
+
+
+def _unlink(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _alive(pid):
@@ -401,28 +511,24 @@ def _tail(path, lines=15):
         return "(no log)\n"
 
 
-def _reject_remote(t):
-    if t.__class__.__name__ == "RemoteTmuxd":
-        raise SystemExit(_fail(REMOTE_ONLY_MESSAGE, EXIT_USAGE))
-
-
 def _fail(message, code):
     sys.stderr.write("✗ %s\n" % message)
     return code
 
 
-# -- parser ---------------------------------------------------------------
+# -- parser ----------------------------------------------------------------
 
 
 def add_id(parser, *, required=True):
-    """``-t`` / ``--id``,外加三个隐藏的旧别名。
+    """``-t`` / ``--id``, plus three hidden legacy aliases.
 
-    ``--id`` 是规范写法 —— 它和库、HTTP、webmuxd 的会话对象都叫同一个名字
-    (works/04-cli.md §3.1)。``-t`` 只是它的短形式:字母向 tmux 借了,概念没有。
+    ``--id`` is the canonical spelling -- the library, the API and webmuxd's
+    session object all call it that (works/04-cli.md §3.1). ``-t`` is its short
+    form: the letter is borrowed from tmux, the concept is not.
 
-    ``-s`` / ``--session`` / ``--target`` 是 1.0.0 的拼法,留着不设期限,
-    但不打印在 --help 里。required 不交给 argparse,因为一个 dest 上挂两个
-    action 时它只会检查其中一个 —— 由 main() 统一报用法错。
+    ``-s`` / ``--session`` / ``--target`` were 1.0.0's spelling and stay
+    forever, just out of --help. Requiredness is checked in main() because
+    argparse only enforces it on one action per dest.
     """
     parser.add_argument("-t", "--id", dest="id", metavar="ID",
                         help="session id" + ("" if required else " (generated when omitted)"))
@@ -436,34 +542,26 @@ def build_parser():
     p = argparse.ArgumentParser(prog="tmuxd", description=__doc__.split("\n")[0])
     p.add_argument("--version", action="version", version="tmuxd %s" % __version__)
     p.add_argument("-L", "--socket", help="instance name (also picks the tmux socket)")
-    p.add_argument("-H", "--host", default=os.environ.get("TMUXD_HOST"),
-                   help="drive a remote tmuxd over HTTP")
+    p.add_argument("--port", type=int, help="ttyd port (default 7681)")
+    p.add_argument("--control-port", type=int, help="control API port (default 7682)")
     p.add_argument("--token")
-    p.add_argument("--port", type=int)
     p.add_argument("--bind")
     p.add_argument("--state-dir")
     p.add_argument("--json", action="store_true", help="raw JSON output")
 
     sub = p.add_subparsers(dest="command", required=True)
 
-    serve = sub.add_parser("serve", help="run in the foreground, holding ttyd up")
-    serve.add_argument("--http-port", type=int, help="also expose the HTTP shell")
-    serve.set_defaults(func=cmd_serve)
-
-    start = sub.add_parser("start", help="run in the background")
-    start.add_argument("--http-port", type=int)
-    start.set_defaults(func=cmd_start)
-
-    sub.add_parser("stop", help="stop ttyd; sessions keep running").set_defaults(func=cmd_stop)
+    sub.add_parser("serve", help="run the server in the foreground").set_defaults(func=cmd_serve)
+    sub.add_parser("start", help="run the server in the background").set_defaults(func=cmd_start)
+    sub.add_parser("stop", help="stop the server; sessions keep running").set_defaults(func=cmd_stop)
     sub.add_parser("status", help="check back on what is actually up").set_defaults(func=cmd_status)
-    sub.add_parser("info", help="versions, ttyd, tmux, session counts").set_defaults(func=cmd_info)
+    sub.add_parser("info", help="versions, both ports, tmux, session counts").set_defaults(func=cmd_info)
 
     new = sub.add_parser("new", help="create or attach to a session")
     add_id(new, required=False)
     new.add_argument("-c", "--cwd")
     new.add_argument("-e", "--env", action="append", metavar="K=V")
-    new.add_argument("command", nargs=argparse.REMAINDER,
-                     help="command to run (after --)")
+    new.add_argument("command", nargs=argparse.REMAINDER, help="command to run (after --)")
     new.set_defaults(func=cmd_new)
 
     ls = sub.add_parser("ls", help="list sessions")
@@ -478,11 +576,6 @@ def build_parser():
     kill = sub.add_parser("kill", help="destroy a session")
     add_id(kill)
     kill.set_defaults(func=cmd_kill)
-
-    rename = sub.add_parser("rename", help="change a session id")
-    add_id(rename)
-    rename.add_argument("new_id")
-    rename.set_defaults(func=cmd_rename)
 
     has = sub.add_parser("has", help="exit 0 if the session exists")
     add_id(has)
@@ -508,29 +601,20 @@ def build_parser():
 
 
 def main(argv=None):
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    args = build_parser().parse_args(argv)
     if getattr(args, "_needs_id", False) and not args.id:
         return _fail("%s needs a session id: -t ID (or --id ID)" % args.command,
                      EXIT_USAGE)
     try:
         return args.func(args)
-    except SystemExit as exc:
-        return exc.code
-    except NoSuchSession as exc:
-        return _fail(exc.message, EXIT_NO_SESSION)
-    except SessionError as exc:
-        return _fail("%s: %s" % (exc.code, exc.message), EXIT_STATE)
-    except (Unreachable, Unauthorized) as exc:
-        return _fail("%s: %s" % (exc.code, exc.message), EXIT_UNREACHABLE)
-    except TmuxGone as exc:
-        return _fail("%s: %s" % (exc.code, exc.message), EXIT_TMUX_GONE)
-    except PlatformError as exc:
-        return _fail("%s: %s" % (exc.code, exc.message), EXIT_FAIL)
-    except TmuxdError as exc:
-        return _fail("%s: %s" % (exc.code, exc.message), EXIT_FAIL)
-    except ValueError as exc:
-        return _fail(str(exc), EXIT_STATE)
+    except NoServer as exc:
+        return _fail(str(exc), EXIT_FAIL)
+    except Exception as exc:  # library / wire errors carry a code
+        code = getattr(exc, "code", None)
+        if code is None:
+            raise
+        return _fail("%s: %s" % (code, getattr(exc, "message", exc)),
+                     EXIT_FOR.get(code, EXIT_FAIL))
     except KeyboardInterrupt:
         return EXIT_FAIL
 

@@ -1,7 +1,7 @@
 """各场景共用的 fixture 与 helper。
 
-- ``instance`` (fixture) —— 一个 ``Tmuxd``,自己的 tmux socket 和状态目录,**不起 ttyd**
-- ``served`` (fixture) —— 同上,但真的在一个空闲端口上起 ttyd
+- ``instance`` (fixture) —— 一个 ``Tmuxd``:自己的 tmux socket、状态目录,
+  以及一个真的 ttyd(``tmuxd = tmux + ttyd``,没有"只要一半"的模式)
 - ``screen(t, sid)`` —— 读屏幕。**只有测试能这么干**,库本身刻意不提供(works/03-server.md §7)
 - ``wait_for(t, sid, needle)`` —— 等到屏幕上出现某段文字
 - ``free_port()`` / ``kill_pool(name)`` —— 挑端口 / 收尾时把整个池干掉
@@ -87,11 +87,23 @@ def wait_until(predicate, timeout: float = 5.0) -> bool:
     return predicate()
 
 
+def _make(tmp_path, request, prefix="t"):
+    if not HAVE_TTYD:
+        pytest.skip("ttyd not installed")
+    name = pool_name(request, prefix=prefix)
+    t = Tmuxd(port=free_port(), socket=name, token=TOKEN,
+              state_dir=str(tmp_path), workspace=str(tmp_path))
+    return name, t
+
+
 @pytest.fixture
 def instance(tmp_path, request):
-    """一个不起 ttyd 的实例 —— 大多数场景不需要网页那半。"""
-    name = pool_name(request)
-    t = Tmuxd(port=None, socket=name, state_dir=str(tmp_path), workspace=str(tmp_path))
+    """一个完整的实例。
+
+    没有"不起 ttyd"的选项 —— tmuxd = tmux + ttyd,缺一个都不成立
+    (works/01-library.md §2)。所以每个场景拿到的都是真家伙。
+    """
+    name, t = _make(tmp_path, request)
     yield t
     t.close()
     kill_pool(name)
@@ -99,17 +111,8 @@ def instance(tmp_path, request):
 
 @pytest.fixture
 def served(tmp_path, request):
-    """真的起 ttyd 的实例,给需要走网页入口的场景。"""
-    if not HAVE_TTYD:
-        pytest.skip("ttyd not installed")
-    name = pool_name(request, prefix="s")
-    t = Tmuxd(
-        port=free_port(),
-        socket=name,
-        token=TOKEN,
-        state_dir=str(tmp_path),
-        workspace=str(tmp_path),
-    )
+    """``instance`` 的别名 —— 现在两者没有区别了,留着少改一堆用例。"""
+    name, t = _make(tmp_path, request, prefix="s")
     yield t
     t.close()
     kill_pool(name)

@@ -84,33 +84,21 @@ def test_a_stranger_on_the_port_is_an_error_not_a_guess(tmp_path, request):
         kill_pool(name)
 
 
-def test_info_reports_the_door_without_opening_one(tmp_path, request):
-    """CLI 的读命令靠这条 —— 否则 `tmuxd ls` 会顺手起一个 ttyd 又立刻带走。"""
+def test_info_says_who_owns_the_door(tmp_path, request):
+    """`owned` 是运维时要知道的那件事:我退出会不会把网页入口带走。"""
     name = pool_name(request, prefix="peek")
     port = free_port()
     owner = Tmuxd(port=port, socket=name, state_dir=str(tmp_path))
     try:
-        reader = Tmuxd(port=port, socket=name, state_dir=str(tmp_path),
-                       start_ttyd=False)
+        assert owner.info()["ttyd"]["owned"] is True
+
+        adopter = Tmuxd(port=port, socket=name, state_dir=str(tmp_path))
         try:
-            report = reader.info()["ttyd"]
-            assert reader._ttyd is None          # 没开门
-            assert report["listening"] is True   # 但看得见门开着
-            assert report["owned"] is False
+            assert adopter.info()["ttyd"]["owned"] is False
+            assert adopter.info()["ttyd"]["port"] == port
         finally:
-            reader.close()
+            adopter.close()
         assert owner._ttyd.alive()               # 看一眼不该影响它
     finally:
         owner.close()
-        kill_pool(name)
-
-
-def test_info_says_so_when_nobody_is_listening(tmp_path, request):
-    name = pool_name(request, prefix="closed")
-    t = Tmuxd(port=free_port(), socket=name, state_dir=str(tmp_path),
-              start_ttyd=False)
-    try:
-        assert t.info()["ttyd"]["listening"] is False
-    finally:
-        t.close()
         kill_pool(name)

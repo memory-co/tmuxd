@@ -21,18 +21,20 @@ def test_the_pool_has_its_own_socket(instance):
 
 
 def test_sharing_your_own_tmux_is_refused(tmp_path):
-    """那会把会话开进你正在用的那个 server —— 不给这个机会。"""
+    """那会把会话开进你正在用的那个 server —— 不给这个机会。
+
+    这条在碰任何端口之前就该拒绝,所以用例根本不需要一个空闲端口。
+    """
     with pytest.raises(ValueError) as exc:
-        Tmuxd(port=None, socket="default", state_dir=str(tmp_path))
+        Tmuxd(port=1, socket="default", state_dir=str(tmp_path))
     assert "own" in str(exc.value)
 
 
-def test_the_default_instance_still_is_not_yours(tmp_path):
-    t = Tmuxd(port=None, state_dir=str(tmp_path))
-    try:
-        assert t.tmux_socket == "tmuxd"      # 不是 tmux 的 default socket
-    finally:
-        t.close()
+def test_the_default_instance_name_is_still_not_your_socket(tmp_path):
+    """默认实例名叫 tmuxd,而 tmux 的默认 socket 叫 default —— 两回事。"""
+    from tmuxd.core import DEFAULT_SOCKET
+
+    assert DEFAULT_SOCKET == "tmuxd" != "default"
 
 
 # -- 构造完什么都还没起 -----------------------------------------------------
@@ -128,10 +130,12 @@ def test_gc_never_kills_a_live_session(instance):
 def test_kill_tmux_server_only_kills_its_own_pool(tmp_path, request):
     from tests.conftest import kill_pool, pool_name
 
+    from tests.conftest import free_port
+
     a_name = pool_name(request, prefix="a")
     b_name = pool_name(request, prefix="b")
-    a = Tmuxd(port=None, socket=a_name, state_dir=str(tmp_path))
-    b = Tmuxd(port=None, socket=b_name, state_dir=str(tmp_path))
+    a = Tmuxd(port=free_port(), socket=a_name, state_dir=str(tmp_path))
+    b = Tmuxd(port=free_port(), socket=b_name, state_dir=str(tmp_path))
     try:
         a.session(id="in-a", cmd="cat")
         b.session(id="in-b", cmd="cat")

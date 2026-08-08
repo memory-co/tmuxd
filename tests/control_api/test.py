@@ -1,4 +1,4 @@
-"""http_shell — 可选的 HTTP 壳. See README.md."""
+"""control_api — CLI 打的那个口. See README.md."""
 from __future__ import annotations
 
 import json
@@ -7,25 +7,49 @@ import urllib.request
 
 import pytest
 
-from tests.conftest import free_port, needs_tmux, screen, wait_for
-from tmuxd import BadId, NoSuchSession, Unauthorized, Unreachable
-from tmuxd.remote import RemoteTmuxd
+from tests.conftest import free_port, needs_tmux, screen, wait_for, wait_until
 
 pytestmark = needs_tmux
 
+fastapi = pytest.importorskip("fastapi", reason="control API needs tmuxd[server]")
 TOKEN = "s3cret"
 
 
 @pytest.fixture
 def api(instance):
+    """把 router 挂进一个真的 uvicorn 里 —— 这就是 `tmuxd serve` 干的事。"""
+    import threading
+
+    import uvicorn
+
+    from tmuxd.server import create_app
+
     port = free_port()
-    shell = instance.serve_http(port, token=TOKEN)
-    yield instance, "http://127.0.0.1:%d" % port
-    shell.stop()
+    app = create_app(instance, token=TOKEN, control_port=port)
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    base = "http://127.0.0.1:%d" % port
+    assert wait_until(lambda: _reachable(base), timeout=10), "control API 没起来"
+    yield instance, base
+
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+def _reachable(base):
+    try:
+        urllib.request.urlopen(base + "/api/health", timeout=1)
+    except urllib.error.HTTPError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def call(base, method, path, body=None, token=TOKEN, headers=None):
-    """裸 urllib —— 验壳的时候不该用另一层壳当放大镜。"""
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base + path, data=data, method=method)
     if data:
@@ -35,19 +59,12 @@ def call(base, method, path, body=None, token=TOKEN, headers=None):
     for key, value in (headers or {}).items():
         req.add_header(key, value)
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read()
             return resp.status, (json.loads(raw) if raw else {})
     except urllib.error.HTTPError as exc:
         raw = exc.read()
         return exc.code, (json.loads(raw) if raw else {})
-
-
-# -- 默认不开 ---------------------------------------------------------------
-
-
-def test_http_is_off_until_you_ask(instance):
-    assert instance._http is None
 
 
 # -- 鉴权 -------------------------------------------------------------------
@@ -64,7 +81,7 @@ def test_everything_else_needs_one(api):
     assert (status, body["error"]) == (401, "unauthorized")
 
 
-# -- 八个端点 ---------------------------------------------------------------
+# -- 七个端点 ---------------------------------------------------------------
 
 
 def test_create_list_get_delete(api):
@@ -108,39 +125,30 @@ def test_keys_endpoint_takes_key_names_too(api):
     call(base, "POST", "/api/sessions", {"id": "k", "cmd": "cat"})
     call(base, "POST", "/api/sessions/k/keys", {"keys": ["C-c"]})
 
-    from tests.conftest import wait_until
-
     assert wait_until(lambda: not t.has("k"))
 
 
-def test_rename_endpoint(api):
+def test_info_reports_both_ports(api):
+    """两个口,两拨用户 —— info 得把两个都说出来。"""
     t, base = api
-    call(base, "POST", "/api/sessions", {"id": "a", "cmd": "cat"})
-    status, body = call(base, "POST", "/api/sessions/a/rename", {"id": "b"})
-    assert (status, body["id"]) == (200, "b")
-    assert t.has("b")
-
-
-def test_info_endpoint(api):
-    _, base = api
     status, info = call(base, "GET", "/api/info")
     assert status == 200
-    assert info["tmux"]["version"]
-    assert set(info) >= {"version", "socket", "tmux", "sessions"}
+    assert info["ttyd"]["port"] == t.port
+    assert info["control"]["port"] == int(base.rsplit(":", 1)[1])
+    assert info["ttyd"]["port"] != info["control"]["port"]
 
 
 # -- 两个口,两拨用户 -------------------------------------------------------
 
 
-def test_the_url_points_at_ttyd_not_at_this_port(api):
+def test_the_url_points_at_ttyd_not_at_the_control_port(api):
     """API 答程序,URL 给人 —— 实现里最容易搞混的一处。"""
     t, base = api
-    t.port = 12345                            # 假装配了 ttyd
     _, created = call(base, "POST", "/api/sessions", {"id": "u1"})
 
-    api_port = base.rsplit(":", 1)[1]
-    assert created["url"] == "http://127.0.0.1:12345/?arg=u1"
-    assert api_port not in created["url"]
+    control_port = base.rsplit(":", 1)[1]
+    assert created["url"] == "http://127.0.0.1:%d/?arg=u1" % t.port
+    assert control_port not in created["url"]
 
 
 # -- 错误是库异常的投影 -----------------------------------------------------
@@ -160,17 +168,30 @@ def test_bad_id_is_400_with_the_library_code(api):
 
 def test_unknown_route_is_404(api):
     _, base = api
-    status, body = call(base, "GET", "/api/nothing")
-    assert (status, body["error"]) == (404, "not_found")
+    status, _ = call(base, "GET", "/api/nothing")
+    assert status == 404
 
 
-def test_broken_json_is_400(api):
+def test_there_is_no_rename_endpoint(api):
+    """id 是身份不是标签(works/02 §6.1)。
+
+    顺带锁住路由的形状:用 {sid:path} 的话这条路径会被当成 id 为 "a/rename"
+    的会话,于是返回 405 而不是 404 —— 看着像"方法不对",其实是路由吃错了。
+    """
     _, base = api
-    req = urllib.request.Request(base + "/api/sessions", data=b"{oops", method="POST")
-    req.add_header("Authorization", "Bearer " + TOKEN)
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(req, timeout=5)
-    assert exc.value.code == 400
+    call(base, "POST", "/api/sessions", {"id": "a", "cmd": "cat"})
+    status, _ = call(base, "POST", "/api/sessions/a/rename", {"id": "b"})
+    assert status == 404
+
+
+def test_a_slash_in_an_id_is_refused_rather_than_half_working(api):
+    """斜杠在路径段里活不下来 —— ASGI 会把 %2F 解码回 "/" 再路由。
+
+    所以它和 `.` `:` 一样直接拒掉。让它建得出来却取不回来,是最坏的那种"支持"。
+    """
+    _, base = api
+    status, body = call(base, "POST", "/api/sessions", {"id": "team/proj"})
+    assert (status, body["error"]) == (400, "bad_id")
 
 
 # -- 幂等 -------------------------------------------------------------------
@@ -197,57 +218,34 @@ def test_a_different_key_is_a_different_action(api):
         call(base, "POST", "/api/sessions/idem2/keys", {"text": "Y"},
              headers={"Idempotency-Key": "key-%d" % n})
 
-    from tests.conftest import wait_until
-
     assert wait_until(lambda: screen(t, "idem2").count("Y") == 2)
 
 
-# -- RemoteTmuxd:同一批异常 ------------------------------------------------
-
-
-def test_remote_round_trip(api):
-    t, base = api
-    remote = RemoteTmuxd(base, token=TOKEN)
-
-    s = remote.session(id="r1", cwd=t.workspace, cmd="cat")
-    assert (s.id, s.alive) == ("r1", True)
-
-    s.send("remote hello", enter=True)
-    assert wait_for(t, "r1", "remote hello")
-
-    assert [x.id for x in remote.sessions()] == ["r1"]
-    assert remote.has("r1") is True
-    assert remote.info()["tmux"]["version"]
-
-    s.kill()
-    assert remote.has("r1") is False
-
-
-def test_remote_errors_arrive_as_the_same_exception_classes(api):
-    """本地和远程可以用同一个 except 接住 —— 这层壳最值钱的一条。"""
+def test_replaying_a_create_returns_the_same_body(api):
     _, base = api
-    remote = RemoteTmuxd(base, token=TOKEN)
-
-    with pytest.raises(NoSuchSession):
-        remote.get("absent")
-    with pytest.raises(BadId):
-        remote.session(id="bad:id")
-
-
-def test_remote_url_comes_from_the_other_side(api):
-    t, base = api
-    t.port = 23456
-    assert RemoteTmuxd(base, token=TOKEN).session(id="ru").url \
-        == "http://127.0.0.1:23456/?arg=ru"
+    headers = {"Idempotency-Key": "make-once"}
+    first = call(base, "POST", "/api/sessions", {"id": "once", "cmd": "cat"},
+                 headers=headers)
+    second = call(base, "POST", "/api/sessions", {"id": "once", "cmd": "cat"},
+                  headers=headers)
+    assert first == second
 
 
-def test_remote_bad_token(api):
-    _, base = api
-    with pytest.raises(Unauthorized):
-        RemoteTmuxd(base, token="wrong").sessions()
+# -- 挂进别人的应用 ---------------------------------------------------------
 
 
-def test_remote_unreachable_is_its_own_error():
-    remote = RemoteTmuxd("http://127.0.0.1:%d" % free_port(), token=TOKEN)
-    with pytest.raises(Unreachable):
-        remote.sessions()
+def test_the_router_mounts_under_a_prefix(instance):
+    """链路 ① 的人不起 server —— 他们把 router 挂进自己那个 app。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from tmuxd.server import router
+
+    app = FastAPI()
+    app.include_router(router(instance), prefix="/tmuxd")
+    client = TestClient(app)
+
+    assert client.get("/tmuxd/api/health").json() == {"ok": True}
+    created = client.post("/tmuxd/api/sessions", json={"id": "mounted", "cmd": "cat"})
+    assert created.status_code == 201
+    assert instance.has("mounted")

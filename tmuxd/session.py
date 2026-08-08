@@ -4,8 +4,13 @@ Three stored fields -- id, cwd, cmd -- plus whatever tmux can be asked about
 right now. No windows, no panes: the multiplexing half of tmux is not used
 here, because the caller is already doing it (works/02-session.md §1).
 
-Five members, and that is the whole surface: ``send``, ``send_key``,
-``rename``, ``kill``, and the ``url`` you can hand to a person.
+Four members, and that is the whole surface: ``send``, ``send_key``,
+``kill``, and the ``url`` you can hand to a person.
+
+No ``rename``: the id is an identity, not a label. The caller derives it from
+its own world and reenters by it, so renaming would mean the next lookup of
+the same id finds nothing -- which breaks the one property the id exists for
+(works/02-session.md §6.1).
 """
 
 from .errors import NoSuchSession
@@ -74,18 +79,6 @@ class Session:
         return self
 
     # -- lifecycle -------------------------------------------------------
-
-    def rename(self, new_id):
-        self._t._validate_id(new_id)
-        self._require()
-        if self._t._tmux.has_session(new_id):
-            from .errors import SessionExists
-
-            raise SessionExists('id "%s" already has a session' % new_id, id=new_id)
-        self._t._tmux.rename_session(self.id, new_id)
-        self._t._store.rename(self.id, new_id)
-        self.id = new_id
-        return self
 
     def kill(self):
         """Destroy the session. Nothing else does -- not detach, not exit.
