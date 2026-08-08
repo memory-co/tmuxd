@@ -4,41 +4,38 @@
 [![Python](https://img.shields.io/pypi/pyversions/tmuxd)](https://pypi.org/project/tmuxd/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**tmux + ttyd as a Python library: terminals that outlive the connection, that a
-program can type into and a person can open in a browser.**
+**tmux + ttyd 做成一个 Python 库:活得比连接久、程序能往里敲、人能用浏览器打开的终端。**
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md)
+**简体中文** · [English](README.en.md) · [更新日志](CHANGELOG.md)
 
 ---
 
-Everyone has written `ttyd tmux new -A -s work` at some point. tmux keeps the
-session alive, ttyd makes it visible in a browser. It works — but the result has
-no handle on it. Who opened that session, in which directory, is it still alive?
-Want to feed it a command from the outside? SSH in and type `tmux send-keys`.
+`ttyd tmux new -A -s work` 这条命令大家都写过:tmux 让会话活着,ttyd 让你在浏览器里看见。
+能用,但拼出来的东西**没有把手** —— 这个会话是谁开的、开在哪个目录、还活着没有?
+想从外面投喂一条指令?只能 ssh 进去敲 `tmux send-keys`。
 
-tmuxd is that command turned into something you `import`.
+tmuxd 就是把这条命令做成一个**你 import 进来的东西**。
 
 ```python
 from tmuxd import Tmuxd
 
-t = Tmuxd(port=12345, token="changeme")   # ttyd is up; tmux is not yet
+t = Tmuxd(port=12345, token="changeme")   # 这行之后:ttyd 起来了,tmux 还没有
 s = t.session(id="id5", cwd="~/proj", cmd="claude")
-s.send("run the tests", enter=True)
+s.send("把测试跑一遍", enter=True)
 print(s.url)                              # http://127.0.0.1:12345/?arg=id5
 ```
 
-Send that URL to anyone and their browser is *in* that terminal — watching, and
-able to take over the keyboard. **A program hands out the work; a person watches
-it run.**
+那个 URL 发给谁,谁的浏览器就**在这个终端里** —— 看得见,也能直接接手敲。
+**程序把活派下去,人看着它跑。**
 
-## Quick start
+## 快速开始
 
-Needs `tmux` (≥ 3.0) and `ttyd` on the machine — see [Requirements](#requirements).
+机器上要有 `tmux`(≥ 3.0)和 `ttyd` —— 见[依赖](#依赖)。
 
-### As a library — no server needed
+### 当库用 —— 不需要 server
 
 ```bash
-pip install tmuxd          # zero runtime dependencies
+pip install tmuxd          # 零运行时依赖
 ```
 
 ```python
@@ -46,130 +43,107 @@ from tmuxd import Tmuxd
 
 with Tmuxd(port=12345, token="changeme") as t:
     s = t.session(id="deploy", cwd="/srv/app", cmd="./deploy.sh")
-    print("watch it here:", s.url)
-# ttyd goes with your process; the deploy is still running
+    print("在这看:", s.url)
+# ttyd 跟着你的进程走了,部署还在跑
 ```
 
-Your process holds the instance, so there is nothing else to run.
+实例在你自己的进程里,没有别的东西要起。
 
-### From the command line — needs a server
+### 用命令行 —— 需要一个 server
 
 ```bash
 pip install "tmuxd[server]"     # + fastapi + uvicorn
-tmuxd start                     # ttyd on :7681, control API on :7682
+tmuxd start                     # ttyd 在 :7681,管控口在 :7682
 ```
 
 ```bash
 tmuxd new  -s work -c ~/proj
 tmuxd send -s work "npm test" --enter
-tmuxd url  -s work -o           # open it in a browser
+tmuxd url  -s work -o           # 顺手用浏览器打开
 tmuxd ls
-tmuxd stop                      # stops the server; sessions keep running
+tmuxd stop                      # 停的是 server,会话照跑
 ```
 
-A CLI command lives for milliseconds and can hold neither ttyd nor session
-state, so it asks a server that can. That is why the CLI and the server install
-together — [why](docs/v1/works/03-server.md).
+一条 CLI 命令活几十毫秒就退出,持不住 ttyd 也持不住会话状态,
+所以它只能**去问一个持得住的东西**。CLI 和 server 因此是一起装的
+—— [为什么](docs/v1/works/03-server.md)。
 
-## What makes it different
+## 它和别的东西不一样在哪
 
-**It is designed by subtraction.** What was removed says more than what is left.
+**这份设计是一路减出来的。** 减掉的每一样,都比留下的更能说明它是什么。
 
-- **One session is one terminal.** No windows, no panes — the multiplexing half
-  of tmux is not used. Want more terminals? Open more sessions.
-- **Write only, no reading.** No `capture`, no `run`, no output stream, no
-  recording, no event stream. Reading a terminal belongs to a *person* (open the
-  URL — ttyd already does that better than any API could) or to **ssh** (clean
-  stdout, a real exit code, binary safety). What stays is the one write action
-  neither of them can do.
-- **The facade is short-lived, the house is not.** ttyd is a child of your
-  process; the tmux server is nobody's child. `kill -9` your program and the
-  sessions carry on, with their working directory and command remembered.
-- **It never touches your own tmux.** Only the binary is probed, and the pool
-  always opens on a dedicated `tmux -L tmuxd`. Your `tmux ls` is unchanged.
-- **A person and a program type into the same terminal.** Not a feature we
-  built — tmux gives it away, which is why the whole design is arranged
-  around it.
-- **No permission tiers.** Everything is read-write. Holding the token means
-  holding a shell on that machine, so a read-only switch here would be a
-  boundary that is not really there. Lock upstairs, where identity exists.
+- **一个会话就是一个终端。** 没有 window,没有 pane —— tmux 的多路复用那一半不用。
+  要多个终端?多开几个会话。
+- **只写,不读。** 没有 `capture`、`run`、输出流、录制、事件流。读终端内容这件事,
+  要么归**人**(打开那个 URL,ttyd 已经做得比任何 API 都好),要么归 **ssh**
+  (干净的 stdout、真的退出码、二进制安全)。留下的是那个**它们俩都办不了**的写入动作。
+- **门面短命,屋子长命。** ttyd 是你进程的子进程,tmux server 谁的都不是。
+  `kill -9` 掉你的程序,会话照跑,连启动目录和命令都还记得。
+- **它不碰你自己的 tmux。** 只探测二进制,会话池永远开在专属的 `tmux -L tmuxd` 上,
+  你的 `tmux ls` 一个不多一个不少。
+- **人和程序敲的是同一个终端。** 这不是我们做的功能,是 tmux 白送的 ——
+  也正因为白送,整个设计才围着它转。
+- **不分权限档。** 全部可读可写。拿到 token 就是拿到这台机器的 shell,
+  在这一层加个只读开关只是**假的边界**。要锁,往有身份的上层去锁。
 
-## Two ways in
+## 两条链路
 
-|  | Library | CLI |
+|  | 库 | CLI |
 | --- | --- | --- |
-| Holds the instance | your process | `tmuxd serve` |
-| Needs a server | **no** | **yes** |
-| Install | `pip install tmuxd` | `pip install "tmuxd[server]"` |
-| Ports | ttyd only | ttyd + control API |
-| Exposing it | mount `tmuxd.server.router()` in the app you already run | control API on `:7682` |
+| 谁持有实例 | 你的进程 | `tmuxd serve` |
+| 要 server 吗 | **不要** | **要** |
+| 装什么 | `pip install tmuxd` | `pip install "tmuxd[server]"` |
+| 开几个口 | 只有 ttyd | ttyd + 管控口 |
+| 怎么暴露 | 把 `tmuxd.server.router()` 挂进你已经在跑的 app | 管控口 `:7682` |
 
-Two ports, two audiences. **`:7681` is ttyd and it is for people** — `s.url` goes
-straight to a colleague. **`:7682` is the control API and it is for programs** —
-JSON in, JSON out, seven endpoints. Driving another machine is `ssh box tmuxd …`,
-not a port on the internet.
+**两个口,两拨用户。** `:7681` 是 ttyd,**给人的** —— `s.url` 直接发给同事就行;
+`:7682` 是管控口,**给程序的** —— JSON 进 JSON 出,七个端点。
+要驱动别的机器就 `ssh box tmuxd …`,而不是把口开到网上。
 
-## Requirements
+## 依赖
 
 | | | |
 | --- | --- | --- |
 | **tmux** | ≥ 3.0 | `apt install tmux` · `brew install tmux` · `dnf install tmux` |
-| **ttyd** | ≥ 1.6 | **bundled in the Linux wheels** · macOS: `brew install ttyd` |
+| **ttyd** | ≥ 1.6 | **Linux wheel 里自带** · macOS:`brew install ttyd` |
 | **Python** | ≥ 3.9 | |
-| **OS** | Linux, macOS | |
+| **系统** | Linux、macOS | |
 
-**On Linux, `pip install` is enough.** The wheels carry an upstream ttyd build
-for their architecture (x86_64, aarch64, armv7l — glibc and musl alike, since
-upstream links statically). A ttyd already on `PATH` still wins: that one can be
-fixed by `apt upgrade` and ours can only be fixed by a release of tmuxd.
+**Linux 上 `pip install` 就够了。** wheel 里带着对应架构的上游 ttyd
+(x86_64 / aarch64 / armv7l,glibc 和 musl 通用 —— 上游是静态链接)。
+PATH 上已经有 ttyd 的话仍然优先用系统那份:**它能被 `apt upgrade` 修,自带的只能等我们发版**。
 
-**On macOS you install ttyd yourself** — `brew install ttyd`. Upstream has never
-shipped a Darwin build (checked back to 1.7.3: ten musl ELFs and one win32.exe,
-every time), and Homebrew's is dynamically linked against five of its own
-packages, so re-shipping it would do badly what brew does well. macOS gets the
-`py3-none-any` wheel, which installs everywhere and simply expects ttyd on PATH.
+**macOS 要自己装** —— `brew install ttyd`。上游从来没出过 Darwin 产物
+(往回查到 1.7.3,每一版都是十个 musl ELF 加一个 win32.exe),而 Homebrew 那份
+动态链接着它自己的五个包,再分发一遍等于把 brew 做得好的事做砸。
+macOS 装的是 `py3-none-any` 那个 wheel —— 哪都装得上,只是要求 PATH 上有 ttyd。
 
-**Windows is not supported** — tmux has no Windows build, and tmuxd imports
-`fcntl`.
+**不支持 Windows** —— tmux 没有 Windows 版,而 tmuxd 顶层 `import fcntl`。
 
-**If your machine is not ready** — an architecture no wheel covers, no tmux, or
-you want a newer ttyd than the one we vendored — there is an optional
-[`tmuxd install`](docs/v1/cli/install.md). It fetches a checksum-verified ttyd
-from upstream (falling back to the bundled one when the network is down) and
-tells you the exact command for tmux on this machine, then records both paths in
-`~/.tmuxd.json` so the library and the CLI find them next time. **A ready machine
-never runs it**, and `Tmuxd()` does not check whether you have.
+**环境不齐的话** —— 冷门架构、没装 tmux、或者想要比自带更新的 ttyd —— 有一条可选的
+[`tmuxd install`](docs/v1/cli/install.md):从上游下一份**验过校验和**的 ttyd
+(网络不通就退回包里自带的),tmux 则告诉你这台机器上确切该敲哪条命令;
+装完把两条路径记进 `~/.tmuxd.json`,下次库和 CLI 都自动读到。
+**环境齐的机器一次都不用敲它**,`Tmuxd()` 也不会检查你跑没跑过。
 
-tmuxd never adopts the tmux you use yourself: it runs its own pool on a
-dedicated socket, so `tmux ls` shows exactly what it showed before.
+tmuxd 永远不会接管你自己在用的那个 tmux:它在专属 socket 上开自己的池,
+所以 `tmux ls` 显示的还是原来那些。
 
-## Documentation
-
-| | |
-| --- | --- |
-| [`docs/v1/sdk`](docs/v1/sdk/) | **Python SDK** — `Tmuxd`, sessions, exceptions |
-| [`docs/v1/cli`](docs/v1/cli/) | **Command line** — 14 commands, the server, exit codes, config |
-| [`docs/v1/works`](docs/v1/works/) | **Design notes** — why it was cut down to this |
-| [`CHANGELOG.md`](CHANGELOG.md) | **2.0 is a breaking release** — what changed, and how to migrate |
-
-## Development
+## 开发
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # ~198 tests, ~50s
-pytest tests/exact_targeting -v     # a single scenario
+pytest                              # 约 198 个用例,约 50 秒
+pytest tests/exact_targeting -v     # 单个场景
 ```
 
-Tests run against **real tmux, real ttyd and a real uvicorn** — this project's
-whole value lives at the seam with those programs, and mocking them would test
-nothing. Each test gets its own tmux socket, so running the suite never disturbs
-a tmux you have open. They are organised [by scenario](tests/README.md), not by
-module.
+测试跑的是**真的 tmux、真的 ttyd、真的 uvicorn** —— 这个项目的全部价值就在它和这几个
+程序的交界处,把它们换成假的等于什么都没测。每个用例拿到独立的 tmux socket,
+所以跑测试不会打扰你开着的 tmux。用例是[按场景组织](tests/README.md)的,不按代码模块。
 
-## License
+## 许可
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Apache-2.0,见 [LICENSE](LICENSE)。
 
-tmuxd drives [ttyd](https://github.com/tsl0922/ttyd) (MIT) and
-[tmux](https://github.com/tmux/tmux) (ISC) as external programs; it neither
-vendors nor modifies them.
+tmuxd 把 [ttyd](https://github.com/tsl0922/ttyd)(MIT)和
+[tmux](https://github.com/tmux/tmux)(ISC)当外部程序驱动,**既不打包也不改动**它们。
