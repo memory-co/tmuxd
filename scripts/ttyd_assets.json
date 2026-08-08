@@ -1,0 +1,32 @@
+{
+  "ttyd_version": "1.7.7",
+  "base_url": "https://github.com/tsl0922/ttyd/releases/download/1.7.7",
+  "license_url": "https://raw.githubusercontent.com/tsl0922/ttyd/1.7.7/LICENSE",
+  "targets": [
+    {
+      "asset": "ttyd.x86_64",
+      "tags": [
+        "manylinux_2_17_x86_64",
+        "musllinux_1_2_x86_64"
+      ],
+      "sha256": "8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55"
+    },
+    {
+      "asset": "ttyd.aarch64",
+      "tags": [
+        "manylinux_2_17_aarch64",
+        "musllinux_1_2_aarch64"
+      ],
+      "sha256": "b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165"
+    },
+    {
+      "asset": "ttyd.arm",
+      "tags": [
+        "manylinux_2_17_armv7l",
+        "musllinux_1_2_armv7l"
+      ],
+      "sha256": "05eac1223914f18c65898d72c8d14e76bbb5435f7762c6dc7f16f041994a8109"
+    }
+  ],
+  "note": "Upstream publishes musl-static ELFs and one win32.exe -- no Darwin build, so macOS falls back to the py3-none-any wheel and `brew install ttyd`. Windows is not supported at all: tmuxd imports fcntl and tmux has no Windows build."
+}

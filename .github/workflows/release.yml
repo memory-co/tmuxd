@@ -1,0 +1,79 @@
+name: Release
+
+# 打 tag 就发版。产物全部在一个 runner 上出:每个平台的差别只是一个静态二进制,
+# 没有任何东西要编译,所以不需要 cibuildwheel、不需要 QEMU、不需要构建矩阵。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Where to publish
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install build twine
+      - run: python scripts/build_wheels.py
+
+      - name: The tag must match the version in the package
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(python -c "import tmuxd; print(tmuxd.__version__)")
+          [ "$tag" = "$pkg" ] || { echo "tag $tag != package $pkg"; exit 1; }
+
+      - run: twine check dist/*
+
+      - name: The any-wheel must not carry a binary
+        run: |
+          if python -m zipfile -l dist/*-py3-none-any.whl | grep -q 'data/ttyd/ttyd\.'; then
+            echo "the any-wheel bundled a binary; it is the fallback for platforms we have none for"
+            exit 1
+          fi
+
+      - name: Install each wheel and import it
+        run: |
+          for w in dist/*.whl; do
+            case "$w" in *aarch64*|*armv7l*) echo "skip $w (foreign arch)"; continue;; esac
+            python -m venv /tmp/probe && /tmp/probe/bin/pip install -q "$w"
+            /tmp/probe/bin/python -c "import tmuxd; print('$(basename $w)', tmuxd.__version__)"
+            rm -rf /tmp/probe
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    # Trusted Publishing: PyPI 用 OIDC 认这个仓库,仓库里不放任何 API token。
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1

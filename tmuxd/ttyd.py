@@ -16,6 +16,8 @@ or kicking connected browsers off (§3.1).
 import ctypes
 import json
 import os
+import platform
+import re
 import shutil
 import signal
 import socket
@@ -27,12 +29,119 @@ from .errors import PortInUse, TtydFailed, TtydMissing
 
 PR_SET_PDEATHSIG = 1
 
+BUNDLED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "ttyd")
 
-def find_binary(explicit=None):
-    path = explicit or os.environ.get("TMUXD_TTYD_BIN") or shutil.which("ttyd")
-    if not path:
-        raise TtydMissing("ttyd not found in PATH (set ttyd_bin= or TMUXD_TTYD_BIN)")
-    return path
+# tmuxd drives -p, -i, -a, -W, -c and ttyd's own ?arg= semantics. An older ttyd
+# fails when somebody opens a browser rather than at construction, which is the
+# worst possible moment to find out.
+MIN_VERSION = (1, 6)
+
+# Upstream names its release assets by architecture; the bundled files keep
+# those names, so adding one is dropping a file into data/ttyd (works/06 §3.3).
+_ARCH = {
+    "x86_64": "ttyd.x86_64",
+    "amd64": "ttyd.x86_64",
+    "aarch64": "ttyd.aarch64",
+    "arm64": "ttyd.aarch64",
+    "armv6l": "ttyd.arm",
+    "armv7l": "ttyd.arm",
+    "arm": "ttyd.arm",
+}
+
+
+def bundled_names():
+    return sorted({name.split(".", 1)[1] for name in _ARCH.values()})
+
+
+def bundled_binary():
+    """The vendored build for this machine, or None.
+
+    Linux only: upstream's static builds are musl ELFs, and macOS wants Mach-O
+    (works/06 §3.3). Pretending otherwise would hand a macOS user a file that
+    cannot execute.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    name = _ARCH.get(platform.machine().lower())
+    if not name:
+        return None
+    path = os.path.join(BUNDLED_DIR, name)
+    return path if os.path.exists(path) else None
+
+
+def parse_version(text):
+    match = re.search(r"(\d+)\.(\d+)", text or "")
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def is_usable(path):
+    """Runs, and new enough to have the flags we drive."""
+    try:
+        proc = subprocess.run([path, "--version"], capture_output=True, text=True,
+                              timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    version = parse_version(proc.stdout or proc.stderr)
+    return version is not None and version >= MIN_VERSION
+
+
+def find_binary(explicit=None, *, state_dir=None, on_fallback=None):
+    """Explicit, then PATH, then the bundled build (works/06 §3).
+
+    PATH wins over the bundled copy on purpose: a distro-installed ttyd is one
+    `apt upgrade` can fix, and ours is one only a release of tmuxd can. The
+    bundled build serves the case where the system has none at all.
+
+    An explicit ``ttyd_bin=`` is never silently replaced -- if you named a
+    binary and it does not work, that is an error, not a cue to use another.
+    """
+    explicit = explicit or os.environ.get("TMUXD_TTYD_BIN")
+    if explicit:
+        if not is_usable(explicit):
+            raise TtydMissing(
+                "ttyd_bin=%s cannot run, or is older than %d.%d. An explicitly "
+                "named binary is never swapped out -- drop ttyd_bin to use the "
+                "bundled one." % (explicit, *MIN_VERSION), path=explicit)
+        return explicit
+
+    on_path = shutil.which("ttyd")
+    if on_path and is_usable(on_path):
+        return on_path
+
+    fallback = bundled_binary()
+    if fallback:
+        if on_path and on_fallback:
+            # Not a failure: an old ttyd on PATH quietly steps aside.
+            on_fallback(on_path)
+        return _runnable_copy(fallback, state_dir)
+
+    raise TtydMissing(
+        "ttyd not found%s, and no bundled build for %s/%s.\n"
+        "  bundled: %s\n"
+        "  install: brew install ttyd  |  "
+        "https://github.com/tsl0922/ttyd/releases\n"
+        "  ttyd is required -- tmuxd is tmux + ttyd, and will not start without it."
+        % (" (the one on PATH is too old)" if on_path else "",
+           sys.platform, platform.machine(), ", ".join(bundled_names())),
+        platform=sys.platform, machine=platform.machine())
+
+
+def _runnable_copy(source, state_dir):
+    """Copy into the state dir and chmod it.
+
+    package data loses its executable bit through wheel build and install, and
+    site-packages may be read-only (containers, system Python). Same trick as
+    attach.sh (works/06 §3.4).
+    """
+    if not state_dir:
+        return source
+    target_dir = os.path.join(state_dir, "bin")
+    os.makedirs(target_dir, exist_ok=True)
+    target = os.path.join(target_dir, "ttyd")
+    if not os.path.exists(target) or os.path.getmtime(source) > os.path.getmtime(target):
+        shutil.copyfile(source, target)
+    os.chmod(target, 0o700)
+    return target
 
 
 def _pdeathsig():

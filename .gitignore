@@ -4,3 +4,9 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+
+# ttyd 二进制不进 git:每次上游发版都会换,而 git 会永远留着旧的。
+# 值得版本化的是 scripts/ttyd_assets.json(版本号 + 校验和)。
+tmuxd/data/ttyd/ttyd.*
+tmuxd/data/ttyd/SHA256SUMS
+tmuxd/data/ttyd/LICENSE

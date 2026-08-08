@@ -105,13 +105,20 @@ tmuxd stop                      # 停的是 server,会话照跑
 | | | |
 | --- | --- | --- |
 | **tmux** | ≥ 3.0 | `apt install tmux` · `brew install tmux` · `dnf install tmux` |
-| **ttyd** | 近期版本即可 | `brew install ttyd` · [releases](https://github.com/tsl0922/ttyd/releases) —— Debian/Ubuntu 仓库里没有 |
+| **ttyd** | ≥ 1.6 | **Linux wheel 里自带** · macOS:`brew install ttyd` |
 | **Python** | ≥ 3.9 | |
 | **系统** | Linux、macOS | |
 
-> 把 ttyd 二进制打进包里、让 `pip install` 一条命令就够,
-> [设计已经定了](docs/v1/works/06-dependencies.md),但**代码还没实现** ——
-> 目前仍然要你自己装 ttyd。
+**Linux 上 `pip install` 就够了。** wheel 里带着对应架构的上游 ttyd
+(x86_64 / aarch64 / armv7l,glibc 和 musl 通用 —— 上游是静态链接)。
+PATH 上已经有 ttyd 的话仍然优先用系统那份:**它能被 `apt upgrade` 修,自带的只能等我们发版**。
+
+**macOS 要自己装** —— `brew install ttyd`。上游从来没出过 Darwin 产物
+(往回查到 1.7.3,每一版都是十个 musl ELF 加一个 win32.exe),而 Homebrew 那份
+动态链接着它自己的五个包,再分发一遍等于把 brew 做得好的事做砸。
+macOS 装的是 `py3-none-any` 那个 wheel —— 哪都装得上,只是要求 PATH 上有 ttyd。
+
+**不支持 Windows** —— tmux 没有 Windows 版,而 tmuxd 顶层 `import fcntl`。
 
 tmuxd 永远不会接管你自己在用的那个 tmux:它在专属 socket 上开自己的池,
 所以 `tmux ls` 显示的还是原来那些。

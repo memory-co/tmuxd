@@ -57,7 +57,7 @@ packages = ["tmuxd"]
 version = { attr = "tmuxd.__version__" }
 
 [tool.setuptools.package-data]
-tmuxd = ["data/*"]
+tmuxd = ["data/*", "data/ttyd/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

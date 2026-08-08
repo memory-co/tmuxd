@@ -1,0 +1,90 @@
+name: CI
+
+# 这个项目的全部价值都在它和 tmux / ttyd 的交界处,所以 CI 装真的 tmux、
+# 真的 ttyd,跑真的 uvicorn —— 把它们换成 mock 等于什么都没测。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      # ttyd is not in Debian/Ubuntu's repos -- that absence is the whole
+      # reason the wheels bundle it. CI installs the same upstream binary the
+      # manifest pins, so the version under test is the version we ship.
+      - name: Install ttyd (upstream release, checksum-verified)
+        run: |
+          python scripts/fetch_ttyd.py
+          sudo install -m 0755 tmuxd/data/ttyd/ttyd.x86_64 /usr/local/bin/ttyd
+          ttyd --version && tmux -V
+
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  # The bundled fallback is the one path CI can check better than a laptop can:
+  # a runner with no ttyd on PATH at all.
+  bundled-fallback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: pip install build && python scripts/build_wheels.py
+
+      - name: Install the x86_64 wheel and run with no ttyd on PATH
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install dist/*manylinux_2_17_x86_64*.whl
+          ! command -v ttyd || { echo "ttyd unexpectedly on PATH"; exit 1; }
+          /tmp/v/bin/python - <<'PY'
+          import socket
+          from tmuxd import Tmuxd
+          s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close()
+          t = Tmuxd(port=p, token="x", socket="ci", state_dir="/tmp/ci-state")
+          assert t.info()["ttyd"]["source"] == "bundled", t.info()["ttyd"]
+          assert t.session(id="x", cmd="cat").alive
+          t.kill_tmux_server(); t.close()
+          print("bundled ttyd carried a full instance")
+          PY
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every relative link in the docs resolves
+        run: |
+          fail=0
+          while read -r f; do
+            d=$(dirname "$f")
+            grep -oE '\]\(([^)#]+)(#[^)]*)?\)' "$f" \
+              | sed -E 's/^\]\(//; s/\)$//; s/#.*//' \
+              | while read -r l; do
+                  [ -z "$l" ] && continue
+                  case "$l" in http*) continue;; esac
+                  [ -e "$d/$l" ] || { echo "BROKEN in $f: $l"; exit 1; }
+                done || fail=1
+          done < <(git ls-files '*.md')
+          exit $fail

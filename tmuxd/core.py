@@ -11,6 +11,7 @@ The CLI and the HTTP endpoint call exactly this. Nothing lives above it.
 import os
 import shutil
 import time
+import warnings
 from urllib.parse import quote
 
 from . import state as _state
@@ -101,8 +102,14 @@ class Tmuxd:
         self._conf = self._render_conf()
         self._tmux = _tmux.Tmux(self.tmux_bin, self.tmux_socket, self._conf)
 
+        self.ttyd_bin = _ttyd.find_binary(
+            ttyd_bin, state_dir=self.state_dir,
+            on_fallback=lambda old: warnings.warn(
+                "ttyd on PATH (%s) is older than %d.%d; using the bundled build "
+                "instead" % (old, *_ttyd.MIN_VERSION), RuntimeWarning, stacklevel=3),
+        )
         self._ttyd = _ttyd.ensure(
-            binary=_ttyd.find_binary(ttyd_bin),
+            binary=self.ttyd_bin,
             port=self.port,
             bind=self.bind,
             token=self.token,
@@ -256,6 +263,11 @@ class Tmuxd:
 
     # -- introspection ----------------------------------------------------
 
+    @property
+    def ttyd_is_bundled(self):
+        """True when the vendored build answered rather than one on PATH."""
+        return os.path.dirname(self.ttyd_bin) == os.path.join(self.state_dir, "bin")
+
     def info(self):
         sessions = self.sessions()
         alive = sum(1 for s in sessions if s.alive)
@@ -270,6 +282,9 @@ class Tmuxd:
                 "bind": self._ttyd.bind,
                 "pid": self._ttyd.pid,
                 "owned": self._ttyd.owned,
+                "bin": self.ttyd_bin,
+                # Which of the three lookup levels answered (works/06 §3).
+                "source": "bundled" if self.ttyd_is_bundled else "path",
             },
             "tmux": {
                 "bin": self.tmux_bin,

@@ -114,13 +114,23 @@ not a port on the internet.
 | | | |
 | --- | --- | --- |
 | **tmux** | ≥ 3.0 | `apt install tmux` · `brew install tmux` · `dnf install tmux` |
-| **ttyd** | any recent | `brew install ttyd` · [releases](https://github.com/tsl0922/ttyd/releases) — not in Debian/Ubuntu repos |
+| **ttyd** | ≥ 1.6 | **bundled in the Linux wheels** · macOS: `brew install ttyd` |
 | **Python** | ≥ 3.9 | |
 | **OS** | Linux, macOS | |
 
-> Bundling a ttyd binary so `pip install` is enough on its own is
-> [designed](docs/v1/works/06-dependencies.md) but **not implemented yet** —
-> for now you install ttyd yourself.
+**On Linux, `pip install` is enough.** The wheels carry an upstream ttyd build
+for their architecture (x86_64, aarch64, armv7l — glibc and musl alike, since
+upstream links statically). A ttyd already on `PATH` still wins: that one can be
+fixed by `apt upgrade` and ours can only be fixed by a release of tmuxd.
+
+**On macOS you install ttyd yourself** — `brew install ttyd`. Upstream has never
+shipped a Darwin build (checked back to 1.7.3: ten musl ELFs and one win32.exe,
+every time), and Homebrew's is dynamically linked against five of its own
+packages, so re-shipping it would do badly what brew does well. macOS gets the
+`py3-none-any` wheel, which installs everywhere and simply expects ttyd on PATH.
+
+**Windows is not supported** — tmux has no Windows build, and tmuxd imports
+`fcntl`.
 
 tmuxd never adopts the tmux you use yourself: it runs its own pool on a
 dedicated socket, so `tmux ls` shows exactly what it showed before.

@@ -160,23 +160,23 @@ ttyd --version   →  低于 1.6 视为不合格
 文件名**沿用上游 release 的资产名**,`platform.machine()` 直接当键查:
 
 ```
-tmuxd/data/ttyd/
-├── ttyd.x86_64      ← 绝大多数服务器和桌面
-├── ttyd.arm         ← 32 位 ARM
-└── LICENSE          ← ttyd 是 MIT,必须随包带上署名(§4.2)
+tmuxd/data/ttyd/          ← 平台 wheel 里只有一个二进制;git 里一个都没有(§5.3)
+├── ttyd.<arch>           ← 由 CI 按清单放进对应的 wheel
+├── LICENSE               ← ttyd 是 MIT,必须随包带上署名(§4.2)
+└── SHA256SUMS            ← 上游的那份,裁到本 wheel 带的那一个
 ```
 
 | `platform.machine()` | 用哪个 |
 | --- | --- |
 | `x86_64` / `amd64` | `ttyd.x86_64` |
 | `armv7l` / `armv6l` / `arm` | `ttyd.arm` |
-| 其余(含 `aarch64` / `arm64`) | 没有自带的可用 → 报错,给上游 releases 链接 |
+| `aarch64` / `arm64` | `ttyd.aarch64` |
+| 其余 | 没有自带的可用 → 报错,给上游 releases 链接 |
 
-> **`aarch64` 不在自带清单里,这是一处需要知情的取舍。**
-> 64 位 ARM(Graviton、树莓派 64 位系统、ARM 云主机)**跑不了 `ttyd.arm`** ——
-> 那是 32 位 ELF,只有在开了 `CONFIG_COMPAT` 的内核上才可能执行,
-> 而不少发行版的 aarch64 版本已经关掉了 32 位支持。所以这些机器会落到"报错 + 自己装"。
-> 要覆盖它们,把上游的 `ttyd.aarch64` 放进这个目录就行 —— **查找机制一行都不用改。**
+> **`aarch64` 是按平台发 wheel 之后才补上的**(§5):以前全塞一个包时它被体积挤掉了,
+> 现在每个 wheel 只带一个二进制,它自然进来了。这很要紧 —— 64 位 ARM
+> (Graviton、树莓派 64 位系统、ARM 云主机)**跑不了 `ttyd.arm`**,
+> 那是 32 位 ELF,不少 aarch64 发行版已经关掉了 32 位支持。
 
 **只在 Linux 上生效。** 这不是保守,是上游的资产列表决定的 ——
 1.7.7 那一版全部产物如下:
@@ -195,8 +195,9 @@ ttyd.win32.exe
 自己给 macOS 编一份不在考虑范围内(§7):那等于接手一条构建流水线,
 而 Homebrew 已经有 ttyd 的 formula,一条命令的事。
 
-> 要不要补 `ttyd.aarch64` / `ttyd.i686` / `ttyd.mips`,取决于面向什么机群。
-> 每多一个约 +1.2MB,而查找机制不用改一行 —— **加架构就是往目录里多放一个文件。**
+> 要不要补 `ttyd.i686` / `ttyd.s390x` / `ttyd.mips`,取决于面向什么机群。
+> **加一个架构 = 清单里加一条**([`scripts/ttyd_assets.json`](../../../scripts/ttyd_assets.json)),
+> 查找那边加一行映射 —— 而且不影响别的 wheel 的体积(§5)。
 
 ### 3.4 可执行位:wheel 里保不住
 
@@ -236,22 +237,63 @@ ttyd 是 MIT,再分发合法,但**必须随包带上它的 LICENSE 和版权声�
 "本包含有 ttyd 的预编译二进制(MIT),来自 <上游 release 链接>"。
 自带的版本号也应该出现在 `info()["ttyd"]` 里,好让人知道自己在跑什么。
 
-## 5. 一个意外的好处:wheel 仍然是 `py3-none-any`
+## 5. 多平台 wheel:每个只带自己那一个
 
-一般"打包二进制"的第一反应是:包从此platform-specific,每次发版变成构建矩阵。
-**这个方案不是。** 因为几个架构的二进制**同时**放在包里、**运行时**才挑,
-所以仍然是一个 `py3-none-any` wheel:
+早先这一节写的是"全塞进一个 `py3-none-any` wheel,用体积换掉整个构建矩阵"。
+**改成按平台发 wheel 了**,因为那笔交易的前提没成立:
 
-| | 多平台 wheel(常规做法) | 全塞进一个 wheel(本方案) |
-| --- | --- | --- |
-| 发版 | 每个平台一个 wheel,要 CI 矩阵 | **一个 wheel,一次上传** |
-| 冷门平台 | 落到 sdist,行为不同 | 行为一致(都是"没自带的就报错") |
-| 体积 | 每个 wheel 小 | **+2.4MB(两个);每多一个架构约 +1.2MB** |
-| 用不到的人 | 不下载 | 系统已装 ttyd 的人白背 2.4MB |
+- **体积不是必须付的。** 平台 wheel 里只有本机那一个二进制(~0.8 MB 压缩后),
+  而不是所有架构加起来;
+- **"矩阵很贵"这条不适用于我们。** 通常的矩阵贵在**要编译** —— 交叉工具链、QEMU、
+  cibuildwheel。**这里一行代码都不编译**:平台之间的差别只是一个静态二进制,
+  所以整套产物在**一个 runner 上**出:拿普通 wheel、塞进对应的 ttyd、改 tag、重新打包;
+- 反过来还便宜了:**能覆盖的架构变多了**,加一个就是清单里加一条。
 
-**用体积换掉整个构建矩阵。** 对一个 40KB 的纯 Python 包来说 2.4MB 不算小,
-但比起"维护 4 条 CI 流水线 + 两种安装路径的行为差异",这笔交易划算 ——
-尤其因为**没有矩阵就没有"某个平台忘了发"这种事故**。
+```
+tmuxd-X-py3-none-any.whl                                   不带二进制  ← macOS 等
+tmuxd-X-py3-none-manylinux_2_17_x86_64.musllinux_1_2_x86_64.whl    ttyd.x86_64
+tmuxd-X-py3-none-manylinux_2_17_aarch64.musllinux_1_2_aarch64.whl  ttyd.aarch64
+tmuxd-X-py3-none-manylinux_2_17_armv7l.musllinux_1_2_armv7l.whl    ttyd.arm
+tmuxd-X.tar.gz
+```
+
+**manylinux 和 musllinux 共用一个文件。** 上游是静态 musl 构建,不依赖任一 libc,
+所以同一份产物可以同时声明两个 tag,四个 Linux tag 落成两个 wheel。
+
+### 5.1 那个 `py3-none-any` 不是残留,是兜底
+
+pip 会挑它能用的最具体的 wheel。所以带二进制的平台拿平台 wheel,
+**其余的一切 —— macOS、s390x、没想到的某块板子 —— 仍然装得上**,只是要自己装 ttyd。
+
+只发平台 wheel 会把"你得装个 ttyd"变成"**没有给你的 wheel**",那是另一个量级的坏。
+
+### 5.2 macOS 为什么不能从 Homebrew 拿
+
+问过一轮:brew 有 ttyd,能不能抠出来打进 wheel?**不能,而且不该。**
+
+```
+$ curl -s https://formulae.brew.sh/api/formula/ttyd.json | …
+运行时依赖: json-c, libevent, libuv, libwebsockets, openssl@3
+bottle 平台: arm64_sequoia / arm64_sonoma / arm64_tahoe / sonoma / …
+```
+
+- brew 的 ttyd 是**动态链接**到那五个 brew 包的 dylib 上的,
+  从 bottle 里抠出单个二进制,离开 Homebrew 那棵树就跑不起来;
+- bottle 按 **macOS 版本 × 架构**分别构建,还随 brew 重建而更替 —— 那是一个会腐烂的矩阵;
+- Apple Silicon 上**未签名的二进制不给执行**,而 brew 是在安装时做临时签名的。
+
+**`brew install ttyd` 本身就是那个渠道。** 它替用户处理了 dylib、重定位和签名,
+我们再分发一份等于把 brew 做得好的事做砸 —— 和 §2.2 拒绝内联 tmux 源码是同一条判据。
+
+### 5.3 CI 就该干这个
+
+产物在 GitHub Actions 上出([`.github/workflows/release.yml`](../../../.github/workflows/release.yml)),
+打 tag 触发,发布走 **Trusted Publishing**(OIDC),仓库里不放任何 API token。
+
+**二进制不进 git。** 每次上游发版都会换,而 git 会永远留着旧的;
+值得版本化的是清单 [`scripts/ttyd_assets.json`](../../../scripts/ttyd_assets.json)
+—— 版本号、每个架构的 sha256、以及架构到 wheel tag 的映射。
+CI 按它下载并校验,本地想试就跑 `scripts/fetch_ttyd.py`。
 
 ## 6. 三种失败,三段文案
 

@@ -29,11 +29,17 @@
 - **`tmuxd.server.router()`** —— 挂进你自己的 FastAPI 应用,鉴权/日志/CORS 全走你那套;
 - **可选依赖 `tmuxd[server]`** —— 基础安装仍然**零运行时依赖**,
   因为嵌库那条链路一行 Web 框架都用不上;
-### 还没做
-
-- **自带 ttyd 二进制** —— 设计已经定了(PATH 优先、包里带 `x86_64` / `arm` 兜底,
-  见[依赖设计](docs/v1/works/06-dependencies.md)),**代码还没实现**。
-  这一版仍然要求你自己装 ttyd。
+- **Linux wheel 自带 ttyd**,`pip install` 一条命令就够。三级查找:
+  显式 `ttyd_bin=` → PATH → 包里自带的。**PATH 优先**(系统那份能被 `apt upgrade` 修,
+  自带的只能等我们发版);PATH 上那个低于 1.6 就无感降级到自带的;
+  自带的会复制到状态目录再 chmod(package data 过 wheel 之后可执行位会丢);
+- **按平台发 wheel** —— 每个只带自己那一个架构(x86_64 / aarch64 / armv7l),
+  manylinux 与 musllinux 共用一份产物(上游静态链接,不依赖任一 libc)。
+  外加一个 `py3-none-any` 兜底:macOS 和没覆盖到的架构照样装得上,只是要自己装 ttyd。
+  **不编译任何东西,所以整套产物在一个 runner 上出** —— 没有 cibuildwheel、没有 QEMU;
+- **GitHub Actions** —— CI 装真的 tmux 和真的 ttyd 跑全量测试(Python 3.9–3.13),
+  外加一个"PATH 上没有 ttyd"的作业专门验自带那条路;
+  发版走 **Trusted Publishing**(OIDC),仓库里不放 API token。
 
 ### 修的 bug
 
