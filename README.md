@@ -8,15 +8,17 @@
 
 tmuxd 把这条命令做成一个服务:**会话由 API 管,由 URI 定位,能被程序驱动。**
 
-- 底下就是**一个真的 tmux server** —— `tmux -L tmuxd attach -t work` 接的是同一个现场,不是黑盒
 - **门面挂了,屋子还在**:tmuxd 重启、升级、被 kill -9,会话统统不受影响
 - `send-keys` / `capture-pane` 有了 HTTP 版,还有拿得到退出码的 `run`
-- 分享链接默认只读(抄 ttyd),人和程序 attach 的是同一个 pane
+- **一个会话就是一个终端** —— 不做 window / pane,要几个终端就开几个会话
+- **全部可读可写,这一层不做权限** —— 要区分谁能看谁能写,往有身份的上层去锁
+- **会话池是专属的** —— 只探测 tmux 二进制,一律 `-L` 开独立 server,不碰你自己的 tmux
 
 ```bash
 pip install tmuxd
-tmuxd start --tmux-socket default   # 接管你现在正在用的那个 tmux
-tmuxd ls                            # 手里那些会话,现在都有网页了
+tmuxd start       # 起服务;你自己的 tmux ls 一个不多一个不少
+tmuxd new -s work -c ~/proj
+tmuxd attach -t work -p             # → http://localhost:7681/s/work/
 ```
 
 ```python
@@ -26,7 +28,7 @@ t = Server("http://box:7681", token="...").session("work")
 t.send("npm test", enter=True)
 print(t.capture())                  # 屏幕上是什么
 print(t.run("git rev-parse HEAD"))  # 要退出码就用 run
-print(t.share(read_only=True))      # 给同事的围观链接
+print(t.share())                    # 限这个会话、限一小时的链接,发给同事接手
 ```
 
 设计文档:[`docs/v1/works`](docs/v1/works/)
