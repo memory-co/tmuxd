@@ -453,58 +453,64 @@ def cmd_install(args):
         # (Same trap as the `serve` banner -- stdout block-buffers under a pipe.)
         print("%-6s %s%s" % (current[0], marks.get(level, "  "), text), flush=True)
 
-    # -- tmux: detect; install only when already root; otherwise say the words
-    current[0] = "tmux"
-    named = bool(args.tmux_bin)
-    tmux_bin = args.tmux_bin or _tmux_lookup()
-    if not tmux_bin:
-        report("fail", "not found")
-    elif not I.tmux_is_usable(tmux_bin):
-        report("fail", "%s cannot run, or is older than %d.%d"
-               % (tmux_bin, *TMUX_MIN))
-        tmux_bin = None
-    # A binary you named by hand is never quietly replaced with another one --
-    # same rule as ttyd_bin= (works/06 §3).
-    if not tmux_bin and not named:
-        tmux_bin = I.install_tmux(report)
-    if tmux_bin:
-        print("tmux   ✓ %-12s %s" % (I.tmux_version(tmux_bin) or "?", tmux_bin),
-              flush=True)
+    def ok(what, version, path, note=""):
+        print("%-6s ✓ %-12s %s%s" % (what, version, path, note), flush=True)
 
-    # -- ttyd: network first, bundled second
-    current[0] = "ttyd"
-    if args.ttyd_bin:
-        ttyd_bin, how = args.ttyd_bin, "explicit"
-        if not T.is_usable(ttyd_bin):
-            report("fail", "%s cannot run, or is older than %d.%d"
-                   % (ttyd_bin, *T.MIN_VERSION))
-            ttyd_bin = None
+    def broken(what, path, minimum):
+        """An entry in the file is wrong. Say so; do not route around it.
+
+        This is the one case where nothing is installed and nothing is
+        written. The file may well be hand-written -- with no --tmux-bin or
+        --ttyd-bin flags, editing it *is* how you pin a binary -- so replacing
+        what it says would be overruling the user, and skipping past it
+        silently would leave a config that does nothing.
+        """
+        report("fail", "%s in %s cannot run, or is older than %d.%d"
+               % (path, toolchain.path(), *minimum))
+        report("note", "fix that line, or delete it and run `tmuxd install` again")
+
+    recorded = toolchain.read()
+
+    # -- tmux: what the file says wins; otherwise detect, and install only as root
+    current[0] = "tmux"
+    tmux_bin = recorded.get("tmux")
+    if tmux_bin:
+        if not I.tmux_is_usable(tmux_bin):
+            broken("tmux", tmux_bin, TMUX_MIN)
+            return EXIT_FAIL
+        ok("tmux", I.tmux_version(tmux_bin) or "?", tmux_bin, "  (~/.tmuxd.json)")
     else:
-        ttyd_bin, how = I.install_ttyd(refresh=args.refresh, report=report)
+        tmux_bin = shutil.which("tmux")
+        if tmux_bin and not I.tmux_is_usable(tmux_bin):
+            report("fail", "%s is older than %d.%d" % (tmux_bin, *TMUX_MIN))
+            tmux_bin = None
+        elif not tmux_bin:
+            report("fail", "not found")
+        tmux_bin = tmux_bin or I.install_tmux(report)
+        if tmux_bin:
+            ok("tmux", I.tmux_version(tmux_bin) or "?", tmux_bin)
+
+    # -- ttyd: same rule, then latest -> bundled -> error
+    current[0] = "ttyd"
+    ttyd_bin = recorded.get("ttyd")
     if ttyd_bin:
-        print("ttyd   ✓ %-12s %s%s" % (
-            T.version_of(ttyd_bin), ttyd_bin,
-            "" if how in ("recorded", "path") else "  (%s)" % how), flush=True)
+        if not T.is_usable(ttyd_bin):
+            broken("ttyd", ttyd_bin, T.MIN_VERSION)
+            return EXIT_FAIL
+        ok("ttyd", T.version_of(ttyd_bin), ttyd_bin, "  (~/.tmuxd.json)")
+    else:
+        ttyd_bin, how = I.install_ttyd(report)
+        if ttyd_bin:
+            ok("ttyd", T.version_of(ttyd_bin), ttyd_bin,
+               "" if how == "path" else "  (%s)" % how)
 
     # -- record it, so the next Tmuxd() finds it without looking
     if not tmux_bin and not ttyd_bin:
         return EXIT_FAIL
-    before = toolchain.read()
     after = toolchain.write(tmux=tmux_bin, ttyd=ttyd_bin)
-    print(("写入   %s" % toolchain.path()) if after != before else "无需改动。",
+    print(("写入   %s" % toolchain.path()) if after != recorded else "无需改动。",
           flush=True)
     return EXIT_OK if (tmux_bin and ttyd_bin) else EXIT_FAIL
-
-
-def _tmux_lookup():
-    """What ``Tmuxd()`` would resolve: the recorded one if it still works, else PATH."""
-    from . import install as I
-    from . import toolchain
-
-    recorded = toolchain.read().get("tmux")
-    if recorded and I.tmux_is_usable(recorded):
-        return recorded
-    return shutil.which("tmux")
 
 
 def cmd_kill_server(args):
@@ -675,10 +681,9 @@ def build_parser():
     # Not a step in any quick start: a ready machine never runs this, and
     # Tmuxd() does not check whether you have (works/07-install.md).
     inst = sub.add_parser("install", help="get tmux and ttyd in place (only if they are not)")
-    inst.add_argument("--refresh", action="store_true",
-                      help="fetch ttyd again even if a usable one is already here")
-    inst.add_argument("--tmux-bin", metavar="PATH", help="record this tmux instead of looking")
-    inst.add_argument("--ttyd-bin", metavar="PATH", help="record this ttyd instead of fetching")
+    # No flags at all. ~/.tmuxd.json is where you name a binary, and any flag
+    # here would be a second way to write those same two keys. Want a newer
+    # ttyd? `rm ~/.tmuxd.json` and run this again (works/07 §4.2).
     inst.set_defaults(func=cmd_install)
 
     ks = sub.add_parser("kill-server", help="destroy every session in this pool")

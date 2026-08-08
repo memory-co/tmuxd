@@ -42,30 +42,6 @@ def _env(name, default=None):
     return default if value in (None, "") else value
 
 
-def _stale_warning(what):
-    """What a dead entry in ~/.tmuxd.json costs: a warning and a fallback.
-
-    Never an exception. The file records where a binary *was*; packages get
-    upgraded and directories get cleaned, and a cache that has gone out of
-    date must not stop a machine whose PATH is perfectly fine (works/07 §6.1).
-    """
-    def warn(path):
-        warnings.warn(
-            "%s recorded in %s is gone (%s); falling back. `tmuxd install` "
-            "fixes it." % (what, _toolchain.path(), path),
-            RuntimeWarning, stacklevel=3)
-    return warn
-
-
-def _source(resolved, explicit, recorded, bundled=False):
-    """Which lookup level answered -- for ``info()``, so it is never a guess."""
-    if explicit:
-        return "explicit"
-    if recorded and resolved == recorded:
-        return "config"
-    return "bundled" if bundled else "path"
-
-
 class Tmuxd:
     def __init__(
         self,
@@ -128,23 +104,21 @@ class Tmuxd:
 
         # Resolving the binary and reading `tmux -V` starts no server; the tmux
         # server itself stays lazy until the first session (works/01 §4.1).
-        self.tmux_bin = _tmux.find_binary(tmux_bin, on_stale=_stale_warning("tmux"))
+        self.tmux_bin = _tmux.find_binary(tmux_bin)
         self.tmux_version = _tmux.check_version(self.tmux_bin)
         self._conf = self._render_conf()
         self._tmux = _tmux.Tmux(self.tmux_bin, self.tmux_socket, self._conf)
 
         self.ttyd_bin = _ttyd.find_binary(
             ttyd_bin, state_dir=self.state_dir,
-            on_stale=_stale_warning("ttyd"),
             on_fallback=lambda old: warnings.warn(
                 "ttyd on PATH (%s) is older than %d.%d; using the bundled build "
                 "instead" % (old, *_ttyd.MIN_VERSION), RuntimeWarning, stacklevel=3),
         )
-        self.tmux_source = _source(self.tmux_bin, tmux_bin or _env("TMUXD_TMUX_BIN"),
-                                   recorded.get("tmux"))
-        self.ttyd_source = _source(self.ttyd_bin, ttyd_bin or _env("TMUXD_TTYD_BIN"),
-                                   recorded.get("ttyd"),
-                                   bundled=self.ttyd_is_bundled)
+        # Which level answered, for info(). Not a guess: config is the only
+        # one that can claim a path we already have in hand.
+        self.ttyd_source = ("config" if self.ttyd_bin == recorded.get("ttyd")
+                            else "bundled" if self.ttyd_is_bundled else "path")
         self._ttyd = _ttyd.ensure(
             binary=self.ttyd_bin,
             port=self.port,
@@ -328,7 +302,6 @@ class Tmuxd:
                 "version": self.tmux_version,
                 "socket": self.tmux_socket,
                 "running": self._tmux.server_running(),
-                "source": self.tmux_source,
             },
             "sessions": {
                 "total": len(sessions),

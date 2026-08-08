@@ -26,23 +26,34 @@ ttyd   ✓ 1.7.7        /home/me/.tmuxd/bin/ttyd  (download)
 写入   /home/me/.tmuxd.json
 ```
 
-不带参数跑就是**一次体检加一次补齐**。已经齐了就什么都不做:
+**这条命令没有任何参数。** 指定用哪个二进制只有一个地方 —— 就是 `~/.tmuxd.json`
+(见[下面](#tmuxdjson))。规则一句话:
+
+> **json 里有,就只检查,不安装;json 里没有,才去装,装完写进去。**
+
+| 你想 | 怎么做 |
+| --- | --- |
+| 指定某个二进制 | 编辑 `~/.tmuxd.json` |
+| 换一个新的 ttyd | `rm ~/.tmuxd.json`,再跑一次 |
+| 撤销全部 | `rm ~/.tmuxd.json` |
+
+已经配好之后再跑,就只是一次体检:
 
 ```console
 $ tmuxd install
-tmux   ✓ 3.3a         /usr/bin/tmux
-ttyd   ✓ 1.7.7        /usr/local/bin/ttyd
+tmux   ✓ 3.3a         /usr/bin/tmux             (~/.tmuxd.json)
+ttyd   ✓ 1.7.7        /home/me/.tmuxd/bin/ttyd  (~/.tmuxd.json)
 无需改动。
 ```
 
-| 参数 | 干什么 |
-| --- | --- |
-| `--refresh` | 已经有能用的也重新下一份。**换新版本靠这个** |
-| `--tmux-bin PATH` | 不去找,就记这一个 |
-| `--ttyd-bin PATH` | 不去下,就记这一个(手动下载完用它收尾) |
+json 里那条用不了的话,**它会告诉你,然后停下** —— 不替你改,也不悄悄换一个:
 
-**没有指定版本的参数** —— 装的永远是上游 latest。要钉死某一个,自己下好之后
-`--ttyd-bin` 指过去,或者 `Tmuxd(ttyd_bin=…)`。
+```console
+$ tmuxd install
+tmux   ✓ 3.3a         /usr/bin/tmux             (~/.tmuxd.json)
+ttyd   ✗ /opt/nope in /home/me/.tmuxd.json cannot run, or is older than 1.6
+ttyd     fix that line, or delete it and run `tmuxd install` again
+```
 
 退出码:两个都齐了 `0`,缺一个 `1`。
 
@@ -57,10 +68,10 @@ ttyd   ✓ 1.7.7        /usr/local/bin/ttyd
 
 ```console
 ttyd   ⚠ download failed: … (Connection refused)
-ttyd     using the build bundled in the wheel; `tmuxd install --refresh` once the network is back
+ttyd     using the build bundled in the wheel
 ```
 
-**注意"已经装好了"不包括自带的那份。** PATH 上有、或者 json 里记了,才算装好;
+**注意"已经装好了"不包括自带的那份。** json 里记了、或者 PATH 上有,才算装好;
 只有自带的,`install` 仍然会去联网 —— 否则它要解决的"陈旧"问题永远解决不了。
 
 ## 校验和
@@ -76,7 +87,7 @@ ttyd   ⚠ download failed: checksum mismatch, discarded
          expected 8a217c…
          got      3f91ab…
          this could be a hijacked download or a changed upstream asset -- it will not be installed.
-ttyd     using the build bundled in the wheel; `tmuxd install --refresh` to try upstream again
+ttyd     using the build bundled in the wheel; `rm ~/.tmuxd.json` and run it again to retry upstream
 ```
 
 ## tmux:不会替你 `sudo`
@@ -129,15 +140,17 @@ tmux                                 ttyd
                                      ⑥ 没有 → 报错
 ```
 
-**每次构造 `Tmuxd()` 都会复验 ③**。记的那个二进制被删了、被升级搬走了,
-不会报错,而是**退回去继续找**,并 warn 一次:
+**每次构造 `Tmuxd()` 都会复验 ③,不合格就报错** —— 不会悄悄改用 PATH 上那个:
 
 ```
-RuntimeWarning: ttyd recorded in /home/me/.tmuxd.json is gone (/home/me/.tmuxd/bin/ttyd);
-falling back. `tmuxd install` fixes it.
+TtydMissing: /opt/my-ttyd (named by /home/me/.tmuxd.json) cannot run, or is
+older than 1.6.
+  fix that line, delete it, or run `tmuxd install` again.
+  it is not silently replaced -- you would be running something other than
+  what the file says.
 ```
 
-一个过期的缓存文件,不该让本来能跑的机器跑不起来。
+这个文件是你写的,**换一个去跑等于跑的不是你写的那个,而文件还在那儿声称是它。**
 
 ## 相关
 

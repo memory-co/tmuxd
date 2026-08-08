@@ -42,23 +42,29 @@ def is_usable(path):
     return bool(raw) and _parse_version(raw) >= MIN_VERSION
 
 
-def find_binary(explicit=None, *, on_stale=None):
+def find_binary(explicit=None):
     """Explicit, then ``~/.tmuxd.json``, then PATH (works/07 §6).
 
-    The recorded path is re-checked every time rather than trusted: it is a
-    cache of a past lookup, and the binary behind it can be deleted or moved
-    by an upgrade. A stale entry falls through to PATH -- a cache file must
-    not stop a machine that would otherwise work.
+    The recorded path is re-checked every time rather than trusted -- the
+    binary behind it can be deleted or moved by an upgrade. But a broken
+    entry **raises** rather than falling through to PATH: that file is where
+    a person pins a binary (``tmuxd install`` has no --tmux-bin flag), and
+    quietly running a different tmux than the one it names is worse than
+    stopping (works/07 §6.1).
     """
     path = explicit or os.environ.get("TMUXD_TMUX_BIN")
 
     if not path:
         recorded = toolchain.read().get("tmux")
         if recorded:
-            if is_usable(recorded):
-                path = recorded
-            elif on_stale:
-                on_stale(recorded)
+            if not is_usable(recorded):
+                raise TmuxMissing(
+                    "%s (named by %s) cannot run, or is older than %d.%d.\n"
+                    "  fix that line, delete it, or run `tmuxd install` again.\n"
+                    "  it is not silently replaced -- you would be running "
+                    "something other than what the file says."
+                    % (recorded, toolchain.path(), *MIN_VERSION), found=recorded)
+            path = recorded
 
     path = path or shutil.which("tmux")
     if not path:

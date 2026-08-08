@@ -13,6 +13,7 @@ from tmuxd import tmux as M
 from tmuxd import toolchain
 from tmuxd import ttyd as T
 from tmuxd.cli import main
+from tmuxd.errors import TmuxMissing, TtydMissing
 
 
 def fake_ttyd(path, version="1.7.7"):
@@ -36,14 +37,25 @@ def point_at(monkeypatch, tmp_path, **values):
     return target
 
 
+def only_on_path(monkeypatch, tmp_path, **binaries):
+    """一个只有指定二进制的 PATH。"""
+    bin_dir = tmp_path / "onpath"
+    bin_dir.mkdir(exist_ok=True)
+    made = {}
+    for name, version in binaries.items():
+        make = fake_tmux if name == "tmux" else fake_ttyd
+        made[name] = make(bin_dir / name, version)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    return made
+
+
 # -- 不跑它的时候,一切照旧 -------------------------------------------------
 
 
 def test_no_file_means_nothing_changes(tmp_path, monkeypatch):
     """这条命令是辅助不是步骤:没有 json,查找就该和以前一模一样。"""
     point_at(monkeypatch, tmp_path)          # 指向一个不存在的文件
-    found = fake_ttyd(tmp_path / "ttyd")
-    monkeypatch.setenv("PATH", str(tmp_path))
+    found = only_on_path(monkeypatch, tmp_path, ttyd="1.7.7")["ttyd"]
     monkeypatch.delenv("TMUXD_TTYD_BIN", raising=False)
 
     assert toolchain.read() == {}
@@ -51,7 +63,7 @@ def test_no_file_means_nothing_changes(tmp_path, monkeypatch):
 
 
 def test_a_corrupt_file_reads_as_absent(tmp_path, monkeypatch):
-    """它是上一次查找的缓存,不是真相。坏了该退回去找,不是崩。"""
+    """读不懂就当没有 —— 一个坏文件不该是崩溃。"""
     target = point_at(monkeypatch, tmp_path)
     target.write_text("{ this is not json")
     assert toolchain.read() == {}
@@ -84,23 +96,13 @@ def test_unknown_keys_already_in_the_file_are_ignored(tmp_path, monkeypatch):
     assert toolchain.read() == {"tmux": "/usr/bin/tmux"}
 
 
-def test_writing_none_drops_the_key(tmp_path, monkeypatch):
-    """这次没找到,就该说没有 —— 留着上次那条陈的更糟。"""
-    point_at(monkeypatch, tmp_path, tmux="/usr/bin/tmux", ttyd="/opt/ttyd")
-    toolchain.write(ttyd=None)
-    assert toolchain.read() == {"tmux": "/usr/bin/tmux"}
-
-
-# -- 它在查找顺序里的位置 ---------------------------------------------------
+# -- 文件说什么就是什么 -----------------------------------------------------
 
 
 def test_the_recorded_path_beats_path(tmp_path, monkeypatch):
-    """跑过 install 就是表达了"用这一份",所以它排在 PATH 前面。"""
+    """写在文件里就是**指定**,所以它排在 PATH 前面。"""
     recorded = fake_ttyd(tmp_path / "recorded")
-    on_path = tmp_path / "bin"
-    on_path.mkdir()
-    fake_ttyd(on_path / "ttyd")
-    monkeypatch.setenv("PATH", str(on_path))
+    only_on_path(monkeypatch, tmp_path, ttyd="1.7.7")
     monkeypatch.delenv("TMUXD_TTYD_BIN", raising=False)
     point_at(monkeypatch, tmp_path, ttyd=recorded)
 
@@ -115,58 +117,50 @@ def test_explicit_still_beats_the_recorded_path(tmp_path, monkeypatch):
     assert T.find_binary(mine, state_dir=str(tmp_path / "state")) == mine
 
 
-def test_a_stale_entry_falls_through_instead_of_raising(tmp_path, monkeypatch):
-    """二进制被删了、被升级搬走了 —— 一个过期的缓存文件不该让本来能跑的机器跑不起来。"""
-    on_path = tmp_path / "bin"
-    on_path.mkdir()
-    good = fake_ttyd(on_path / "ttyd")
-    monkeypatch.setenv("PATH", str(on_path))
+def test_a_broken_entry_raises_instead_of_falling_back(tmp_path, monkeypatch):
+    """**不绕过去。**
+
+    这个文件现在是人写的(install 没有 --ttyd-bin 了,指定一个二进制就靠编辑它)。
+    悄悄改用 PATH 上那个,等于跑着一个和文件里写的不是同一个东西,而文件还在那儿
+    声称是它 —— 比直接停下来糟。
+    """
+    good = only_on_path(monkeypatch, tmp_path, ttyd="1.7.7")["ttyd"]
     monkeypatch.delenv("TMUXD_TTYD_BIN", raising=False)
     point_at(monkeypatch, tmp_path, ttyd=str(tmp_path / "gone"))
 
-    told = []
-    picked = T.find_binary(state_dir=str(tmp_path / "state"), on_stale=told.append)
-    assert picked == good
-    assert told == [str(tmp_path / "gone")], "降级了却没说一声"
+    with pytest.raises(TtydMissing) as exc:
+        T.find_binary(state_dir=str(tmp_path / "state"))
+    assert str(tmp_path / "gone") in str(exc.value)
+    assert good not in str(exc.value), "不该暗示它已经替你换了一个"
 
 
-def test_a_too_old_recorded_ttyd_also_falls_through(tmp_path, monkeypatch):
-    on_path = tmp_path / "bin"
-    on_path.mkdir()
-    good = fake_ttyd(on_path / "ttyd")
-    monkeypatch.setenv("PATH", str(on_path))
+def test_a_too_old_recorded_ttyd_also_raises(tmp_path, monkeypatch):
+    only_on_path(monkeypatch, tmp_path, ttyd="1.7.7")
     monkeypatch.delenv("TMUXD_TTYD_BIN", raising=False)
     point_at(monkeypatch, tmp_path, ttyd=fake_ttyd(tmp_path / "old", version="1.4.0"))
 
-    assert T.find_binary(state_dir=str(tmp_path / "state")) == good
+    with pytest.raises(TtydMissing):
+        T.find_binary(state_dir=str(tmp_path / "state"))
 
 
-def test_tmux_reads_the_same_file(tmp_path, monkeypatch):
+def test_tmux_reads_the_same_file_with_the_same_rule(tmp_path, monkeypatch):
     recorded = fake_tmux(tmp_path / "recorded-tmux")
     point_at(monkeypatch, tmp_path, tmux=recorded)
     monkeypatch.delenv("TMUXD_TMUX_BIN", raising=False)
-
     assert M.find_binary() == recorded
 
-
-def test_a_stale_tmux_entry_falls_through_too(tmp_path, monkeypatch):
-    on_path = tmp_path / "bin"
-    on_path.mkdir()
-    good = fake_tmux(on_path / "tmux")
-    monkeypatch.setenv("PATH", str(on_path))
-    monkeypatch.delenv("TMUXD_TMUX_BIN", raising=False)
     point_at(monkeypatch, tmp_path, tmux=str(tmp_path / "gone-tmux"))
+    only_on_path(monkeypatch, tmp_path, tmux="3.3a")
+    with pytest.raises(TmuxMissing) as exc:
+        M.find_binary()
+    assert "tmuxd install" in str(exc.value), "得告诉人怎么修"
 
-    told = []
-    assert M.find_binary(on_stale=told.append) == good
-    assert told
 
-
-# -- 下载:验、降级、拒绝 ---------------------------------------------------
+# -- 下载:latest → 自带 → 报错 ---------------------------------------------
 
 
 def stub_network(monkeypatch, payloads):
-    """把 urlopen 换掉。要测的是三条决策,不是 HTTP。"""
+    """把 urlopen 换掉。要测的是那三步,不是 HTTP。"""
     class Response:
         def __init__(self, blob):
             self._blob = blob
@@ -183,17 +177,10 @@ def stub_network(monkeypatch, payloads):
     def fake_urlopen(url, timeout=None):
         for suffix, blob in payloads.items():
             if url.endswith(suffix):
-                if isinstance(blob, Exception):
-                    raise blob
                 return Response(blob)
         raise OSError("404 %s" % url)
 
     monkeypatch.setattr(I.urllib.request, "urlopen", fake_urlopen)
-
-
-def latest(monkeypatch, version="1.7.7"):
-    monkeypatch.setattr(I, "latest_version", lambda: version)
-    return version
 
 
 def test_it_asks_upstream_what_latest_is(monkeypatch):
@@ -208,7 +195,8 @@ def test_it_asks_upstream_what_latest_is(monkeypatch):
         def __exit__(self, *exc):
             return False
 
-    monkeypatch.setattr(I.urllib.request, "urlopen", lambda url, timeout=None: Response())
+    monkeypatch.setattr(I.urllib.request, "urlopen",
+                        lambda url, timeout=None: Response())
     assert I.latest_version() == "1.7.9"
 
 
@@ -219,9 +207,9 @@ def test_the_checksum_comes_from_that_releases_own_sums(monkeypatch):
 
 
 def test_a_checksum_mismatch_installs_nothing(tmp_path, monkeypatch):
-    """不给 --force。能被绕过的校验等于没有校验(works/07 §9)。"""
+    """不给 --force。能被绕过的校验等于没有校验。"""
     monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
-    latest(monkeypatch)
+    monkeypatch.setattr(I, "latest_version", lambda: "1.7.7")
     stub_network(monkeypatch, {
         "SHA256SUMS": b"deadbeef  %s\n" % I.asset_name().encode(),
         I.asset_name(): b"not the real ttyd"})
@@ -232,108 +220,13 @@ def test_a_checksum_mismatch_installs_nothing(tmp_path, monkeypatch):
     assert not os.path.exists(os.path.join(I.bin_dir(), "ttyd")), "坏文件留在盘上了"
 
 
-def test_download_falls_back_to_the_bundled_build(tmp_path, monkeypatch):
-    """网络不通不是终点 —— 包里那份还在,而且必须说一声(works/07 §3)。"""
-    if not T.bundled_binary():
-        pytest.skip("no bundled build for this platform")
-    monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
-    point_at(monkeypatch, tmp_path)
-    monkeypatch.setattr(I, "download_ttyd", lambda report: (_ for _ in ()).throw(
-        I.DownloadFailed("connection refused")))
-    monkeypatch.setattr(I.shutil, "which", lambda name: None)
-
-    said = []
-    picked, how = I.install_ttyd(report=lambda level, text: said.append((level, text)))
-    assert how == "bundled"
-    assert picked == os.path.join(I.bin_dir(), "ttyd")
-    assert os.access(picked, os.X_OK)
-    assert any(level == "warn" for level, _ in said), "降级了却没说一声"
-
-
-def test_every_kind_of_trouble_falls_back_the_same_way(tmp_path, monkeypatch):
-    """三步就是全部策略:latest → 自带 → 报错。
-
-    校验和不符、连不上、下回来跑不动 —— 处理方式必须一样,因为**能做的事只有一件**。
-    早先的稿子给"拒绝"单开了一条不兜底的路,那是为版本指定服务的;版本指定砍掉之后,
-    那条路只剩下复杂度。
-    """
-    if not T.bundled_binary():
-        pytest.skip("no bundled build for this platform")
-    monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
-    point_at(monkeypatch, tmp_path)
-    monkeypatch.setattr(I.shutil, "which", lambda name: None)
-    latest(monkeypatch)
-    stub_network(monkeypatch, {
-        "SHA256SUMS": b"deadbeef  %s\n" % I.asset_name().encode(),
-        I.asset_name(): b"not the real ttyd"})
-
-    picked, how = I.install_ttyd()
-    assert how == "bundled"
-    assert open(picked, "rb").read(4) != b"not ", "把没验过的东西装上了"
-
-
-def test_no_download_and_no_bundled_build_is_an_error(tmp_path, monkeypatch):
-    """最后一步:两条路都断了就报错,不装半个东西。"""
-    monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
-    point_at(monkeypatch, tmp_path)
-    monkeypatch.setattr(I.shutil, "which", lambda name: None)
-    monkeypatch.setattr(I, "download_ttyd", lambda report: (_ for _ in ()).throw(
-        I.DownloadFailed("connection refused")))
-    monkeypatch.setattr(I, "install_bundled", lambda report: None)
-
-    said = []
-    assert I.install_ttyd(report=lambda l, t: said.append((l, t))) == (None, None)
-    assert any(level == "fail" for level, _ in said)
-
-
-def test_an_already_usable_ttyd_is_left_alone(tmp_path, monkeypatch):
-    """幂等:装好了就什么都不做(works/07 §7)。"""
-    on_path = tmp_path / "bin"
-    on_path.mkdir()
-    good = fake_ttyd(on_path / "ttyd")
-    monkeypatch.setenv("PATH", str(on_path))
-    point_at(monkeypatch, tmp_path)
-    monkeypatch.setattr(I, "_fetch", lambda *a, **k: pytest.fail("已经有了还去下载"))
-
-    picked, how = I.install_ttyd()
-    assert (picked, how) == (good, "path")
-
-
-def test_refresh_downloads_anyway(tmp_path, monkeypatch):
-    on_path = tmp_path / "bin"
-    on_path.mkdir()
-    fake_ttyd(on_path / "ttyd")
-    monkeypatch.setenv("PATH", str(on_path))
-    point_at(monkeypatch, tmp_path)
-    tried = []
-    monkeypatch.setattr(I, "download_ttyd",
-                        lambda report: tried.append(1) or "/x/ttyd")
-
-    assert I.install_ttyd(refresh=True)[1] == "download"
-    assert tried
-
-
-def test_the_bundled_copy_does_not_count_as_already_installed(tmp_path, monkeypatch):
-    """要是自带的算"已装好",这条命令存在的理由(陈旧)就永远修不掉。"""
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    monkeypatch.setenv("PATH", str(empty))
-    point_at(monkeypatch, tmp_path)
-    tried = []
-    monkeypatch.setattr(I, "download_ttyd",
-                        lambda report: tried.append(1) or "/x/ttyd")
-
-    I.install_ttyd()
-    assert tried, "只有自带的时候没去联网"
-
-
 def test_a_verified_download_lands_executable(tmp_path, monkeypatch):
     monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
-    latest(monkeypatch)
-    blob = b"#!/bin/sh\necho \"ttyd version 1.7.7\"\n"
-    digest = hashlib.sha256(blob).hexdigest().encode()
+    monkeypatch.setattr(I, "latest_version", lambda: "1.7.7")
+    blob = b'#!/bin/sh\necho "ttyd version 1.7.7"\n'
     stub_network(monkeypatch, {
-        "SHA256SUMS": b"%s  %s\n" % (digest, I.asset_name().encode()),
+        "SHA256SUMS": b"%s  %s\n" % (hashlib.sha256(blob).hexdigest().encode(),
+                                     I.asset_name().encode()),
         I.asset_name(): blob})
 
     picked = I.download_ttyd()
@@ -341,14 +234,53 @@ def test_a_verified_download_lands_executable(tmp_path, monkeypatch):
     assert os.access(picked, os.X_OK)
 
 
-def test_there_is_no_way_to_ask_for_a_version(tmp_path):
-    """版本指定砍掉了 —— 它带来的每一条分支都是为一个没人提的需求服务的。"""
-    from tmuxd.cli import build_parser
+def test_every_kind_of_trouble_ends_at_the_bundled_build(tmp_path, monkeypatch):
+    """三步就是全部策略。连不上、校验和不符、下回来跑不动 —— 处理方式一样,
+    因为**能做的事只有一件**。"""
+    if not T.bundled_binary():
+        pytest.skip("no bundled build for this platform")
+    monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(I.shutil, "which", lambda name: None)
+    monkeypatch.setattr(I, "latest_version", lambda: "1.7.7")
+    stub_network(monkeypatch, {
+        "SHA256SUMS": b"deadbeef  %s\n" % I.asset_name().encode(),
+        I.asset_name(): b"not the real ttyd"})
 
-    sub = [a for a in build_parser()._actions if getattr(a, "choices", None)][0]
-    flags = {s for a in sub.choices["install"]._actions for s in a.option_strings}
-    assert "--ttyd-version" not in flags
-    assert not hasattr(I, "Refused"), "没有版本指定,就不需要「拒绝」这个概念了"
+    said = []
+    picked, how = I.install_ttyd(lambda level, text: said.append((level, text)))
+    assert how == "bundled"
+    assert open(picked, "rb").read(4) != b"not ", "把没验过的东西装上了"
+    assert any(level == "warn" for level, _ in said), "降级了却没说一声"
+
+
+def test_no_download_and_no_bundled_build_is_an_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("TMUXD_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(I.shutil, "which", lambda name: None)
+    monkeypatch.setattr(I, "download_ttyd", lambda report: (_ for _ in ()).throw(
+        I.DownloadFailed("connection refused")))
+    monkeypatch.setattr(I, "install_bundled", lambda report: None)
+
+    said = []
+    assert I.install_ttyd(lambda l, t: said.append((l, t))) == (None, None)
+    assert any(level == "fail" for level, _ in said)
+
+
+def test_a_ttyd_on_path_is_left_alone(tmp_path, monkeypatch):
+    """幂等:有能用的就不下载。"""
+    good = only_on_path(monkeypatch, tmp_path, ttyd="1.7.7")["ttyd"]
+    monkeypatch.setattr(I, "_fetch", lambda *a, **k: pytest.fail("已经有了还去下载"))
+    assert I.install_ttyd() == (good, "path")
+
+
+def test_the_bundled_copy_does_not_count_as_already_installed(tmp_path, monkeypatch):
+    """要是自带的算「已装好」,这条命令存在的理由(陈旧)就永远修不掉。"""
+    only_on_path(monkeypatch, tmp_path)          # 空 PATH
+    tried = []
+    monkeypatch.setattr(I, "download_ttyd",
+                        lambda report: tried.append(1) or "/x/ttyd")
+
+    I.install_ttyd()
+    assert tried, "只有自带的时候没去联网"
 
 
 # -- tmux:探测,不提权 -----------------------------------------------------
@@ -369,7 +301,8 @@ def test_tmux_is_never_installed_without_root(monkeypatch):
 
 
 def test_the_hint_names_this_machines_package_manager(monkeypatch):
-    monkeypatch.setattr(I.shutil, "which", lambda name: "/usr/bin/apk" if name == "apk" else None)
+    monkeypatch.setattr(I.shutil, "which",
+                        lambda name: "/usr/bin/apk" if name == "apk" else None)
     monkeypatch.setattr(I.os, "geteuid", lambda: 1000)
     assert I.tmux_install_hint() == "sudo apk add tmux"
 
@@ -379,29 +312,48 @@ def test_the_hint_names_this_machines_package_manager(monkeypatch):
 
 def test_the_missing_tmux_error_carries_that_command(tmp_path, monkeypatch):
     """tmux 找不到的那一刻,正是那条命令最值钱的时候。"""
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    monkeypatch.setenv("PATH", str(empty))
+    only_on_path(monkeypatch, tmp_path)          # 空 PATH
     monkeypatch.delenv("TMUXD_TMUX_BIN", raising=False)
     point_at(monkeypatch, tmp_path)
 
-    with pytest.raises(Exception) as exc:
+    with pytest.raises(TmuxMissing) as exc:
         M.find_binary()
-    message = str(exc.value)
-    assert "install" in message
-    assert "required" in message, "得说清 tmux 是必需的"
+    assert "install" in str(exc.value)
+    assert "required" in str(exc.value), "得说清 tmux 是必需的"
 
 
 # -- 命令本身 ---------------------------------------------------------------
 
 
-def test_install_records_what_it_found(tmp_path, monkeypatch, capsys):
+def test_install_records_what_it_found(tmp_path, monkeypatch):
     target = point_at(monkeypatch, tmp_path)
-    tmux = fake_tmux(tmp_path / "tmux")
-    ttyd = fake_ttyd(tmp_path / "ttyd")
+    found = only_on_path(monkeypatch, tmp_path, tmux="3.3a", ttyd="1.7.7")
 
-    assert main(["install", "--tmux-bin", tmux, "--ttyd-bin", ttyd]) == 0
-    assert json.loads(target.read_text()) == {"tmux": tmux, "ttyd": ttyd}
+    assert main(["install"]) == 0
+    assert json.loads(target.read_text()) == {"tmux": found["tmux"],
+                                              "ttyd": found["ttyd"]}
+
+
+def test_install_leaves_an_existing_file_alone(tmp_path, monkeypatch):
+    """已经配好了就只检查,不安装、不改写 —— 幂等。"""
+    mine = {"tmux": fake_tmux(tmp_path / "my-tmux"),
+            "ttyd": fake_ttyd(tmp_path / "my-ttyd")}
+    target = point_at(monkeypatch, tmp_path, **mine)
+    only_on_path(monkeypatch, tmp_path, tmux="3.3a", ttyd="1.7.7")   # 另有一套
+    monkeypatch.setattr(I, "download_ttyd", lambda report: pytest.fail("不该下载"))
+
+    assert main(["install"]) == 0
+    assert json.loads(target.read_text()) == mine, "把用户配的改掉了"
+
+
+def test_a_broken_entry_is_reported_not_overwritten(tmp_path, monkeypatch):
+    """填错了就告诉他,让他自己改 —— 替他改掉等于替他做主。"""
+    mine = {"tmux": str(tmp_path / "nope"), "ttyd": fake_ttyd(tmp_path / "my-ttyd")}
+    target = point_at(monkeypatch, tmp_path, **mine)
+    only_on_path(monkeypatch, tmp_path, tmux="3.3a", ttyd="1.7.7")
+
+    assert main(["install"]) == 1
+    assert json.loads(target.read_text()) == mine, "把用户填错的那行改掉了"
 
 
 def test_install_never_touches_the_conf_file(tmp_path, monkeypatch):
@@ -410,24 +362,31 @@ def test_install_never_touches_the_conf_file(tmp_path, monkeypatch):
     conf.write_text("# 我自己写的\nset -g port 9999\n")
     monkeypatch.setenv("TMUXD_CONFIG", str(conf))
     point_at(monkeypatch, tmp_path)
+    only_on_path(monkeypatch, tmp_path, tmux="3.3a", ttyd="1.7.7")
 
-    main(["install", "--tmux-bin", fake_tmux(tmp_path / "tmux"),
-          "--ttyd-bin", fake_ttyd(tmp_path / "ttyd")])
+    main(["install"])
     assert conf.read_text() == "# 我自己写的\nset -g port 9999\n"
 
 
 def test_install_needs_no_server(tmp_path, monkeypatch):
     """你跑它,正是因为别的还起不来 —— 它不该去连管控口。"""
     point_at(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        "tmuxd.cli.Api",
-        lambda *a, **k: pytest.fail("install 去连 server 了"))
-
-    main(["install", "--tmux-bin", fake_tmux(tmp_path / "tmux"),
-          "--ttyd-bin", fake_ttyd(tmp_path / "ttyd")])
+    only_on_path(monkeypatch, tmp_path, tmux="3.3a", ttyd="1.7.7")
+    monkeypatch.setattr("tmuxd.cli.Api",
+                        lambda *a, **k: pytest.fail("install 去连 server 了"))
+    main(["install"])
 
 
-def test_install_is_in_help(tmp_path):
+def test_install_has_no_flags(tmp_path):
+    """指定二进制靠编辑 json,不靠参数 —— 两条路做同一件事就是多出来的复杂度。"""
+    from tmuxd.cli import build_parser
+
+    sub = [a for a in build_parser()._actions if getattr(a, "choices", None)][0]
+    flags = {s for a in sub.choices["install"]._actions for s in a.option_strings}
+    assert flags <= {"-h", "--help"}, flags
+
+
+def test_install_is_in_help():
     out = subprocess.run(["python", "-m", "tmuxd", "--help"],
                          capture_output=True, text=True)
     assert "install" in out.stdout

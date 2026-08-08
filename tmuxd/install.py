@@ -65,11 +65,6 @@ def tmux_version(binary):
     return raw.replace("tmux ", "") if raw else None
 
 
-def ttyd_version(binary):
-    raw = _run([binary, "--version"])
-    return raw.replace("ttyd version ", "") if raw else None
-
-
 def tmux_is_usable(path):
     raw = _run([path, "-V"])
     return bool(raw) and _tmux._parse_version(raw) >= _tmux.MIN_VERSION
@@ -275,23 +270,19 @@ def install_bundled(report):
     return target
 
 
-def install_ttyd(refresh=False, report=lambda *a: None):
-    """Latest from upstream, then the bundled copy, then an error.
+def install_ttyd(report=lambda *a: None):
+    """PATH, then upstream latest, then the bundled copy. Three steps, no flags.
 
-    Three steps and no options -- that is the whole policy (works/07 §3).
+    Note what counts as already having one: a ttyd on PATH -- **not** the
+    bundled copy. If the bundled build were treated as done, the staleness
+    this command exists to fix would never get fixed.
 
-    ``refresh`` skips the "already have one" shortcut. Note what counts as
-    already having one: explicit, recorded, or on PATH -- **not** the bundled
-    copy. If the bundled build were treated as done, the staleness this
-    command exists to fix would never get fixed.
+    ``~/.tmuxd.json`` is not consulted here: when it names a ttyd, the caller
+    never gets this far (works/07 §4.2).
     """
-    if not refresh:
-        recorded = toolchain.read().get("ttyd")
-        if recorded and _ttyd.is_usable(recorded):
-            return recorded, "recorded"
-        on_path = shutil.which("ttyd")
-        if on_path and _ttyd.is_usable(on_path):
-            return on_path, "path"
+    on_path = shutil.which("ttyd")
+    if on_path and _ttyd.is_usable(on_path):
+        return on_path, "path"
 
     try:
         return download_ttyd(report), "download"
@@ -300,13 +291,13 @@ def install_ttyd(refresh=False, report=lambda *a: None):
 
     fallback = install_bundled(report)
     if fallback:
-        report("note", "using the build bundled in the wheel; "
-                       "`tmuxd install --refresh` to try upstream again")
+        report("note", "using the build bundled in the wheel")
         return fallback, "bundled"
 
     report("fail",
            "no download and no bundled build for %s/%s\n"
-           "         by hand: fetch %s from %s,\n"
-           "                  then `tmuxd install --ttyd-bin /path/to/ttyd`"
-           % (sys.platform, platform.machine(), asset_name(), RELEASES))
+           "         by hand: fetch %s from %s, put it anywhere,\n"
+           "                  and name it in %s"
+           % (sys.platform, platform.machine(), asset_name(), RELEASES,
+              toolchain.path()))
     return None, None

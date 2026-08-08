@@ -79,12 +79,3 @@ def write(**values):
         fh.write("\n")
     os.replace(tmp, target)
     return payload
-
-
-def forget():
-    """Delete the file. ``rm ~/.tmuxd.json`` by hand does the same thing."""
-    try:
-        os.unlink(path())
-        return True
-    except OSError:
-        return False

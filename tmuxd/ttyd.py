@@ -86,20 +86,19 @@ def is_usable(path):
     return version is not None and version >= MIN_VERSION
 
 
-def find_binary(explicit=None, *, state_dir=None, on_fallback=None, on_stale=None):
+def find_binary(explicit=None, *, state_dir=None, on_fallback=None):
     """Explicit, then ``~/.tmuxd.json``, then PATH, then the bundled build.
 
     PATH wins over the bundled copy on purpose: a distro-installed ttyd is one
     `apt upgrade` can fix, and ours is one only a release of tmuxd can. The
     bundled build serves the case where the system has none at all.
 
-    ``~/.tmuxd.json`` sits above PATH because it is explicit -- running
-    ``tmuxd install`` is a statement about which build to use (works/07 §6).
-    It is re-checked every time, and a stale entry falls through rather than
-    raising: a cache file must not break a machine that would otherwise work.
-
-    An explicit ``ttyd_bin=`` is never silently replaced -- if you named a
-    binary and it does not work, that is an error, not a cue to use another.
+    ``~/.tmuxd.json`` sits above PATH because it is a **statement**, not a
+    cache: with no ``--ttyd-bin`` flag on ``tmuxd install``, editing that file
+    is how a person pins a binary. So a broken entry there raises, exactly as
+    a broken ``ttyd_bin=`` does -- routing around it would run something other
+    than what the file names while the file goes on claiming otherwise
+    (works/07 §6.1).
     """
     explicit = explicit or os.environ.get("TMUXD_TTYD_BIN")
     if explicit:
@@ -112,10 +111,14 @@ def find_binary(explicit=None, *, state_dir=None, on_fallback=None, on_stale=Non
 
     recorded = toolchain.read().get("ttyd")
     if recorded:
-        if is_usable(recorded):
-            return recorded
-        if on_stale:
-            on_stale(recorded)
+        if not is_usable(recorded):
+            raise TtydMissing(
+                "%s (named by %s) cannot run, or is older than %d.%d.\n"
+                "  fix that line, delete it, or run `tmuxd install` again.\n"
+                "  it is not silently replaced -- you would be running "
+                "something other than what the file says."
+                % (recorded, toolchain.path(), *MIN_VERSION), path=recorded)
+        return recorded
 
     on_path = shutil.which("ttyd")
     if on_path and is_usable(on_path):

@@ -72,7 +72,7 @@
 ```console
 $ tmuxd install
 ttyd   ⚠ 下载失败(连不上 github.com),改用包里自带的 1.7.7
-       网络恢复后可以 tmuxd install --refresh 换成最新的
+       网络恢复后 rm ~/.tmuxd.json 再跑一次就能换成最新的
 ```
 
 ### 3.1 这和 §06 的"运行时查找顺序"不冲突
@@ -121,6 +121,26 @@ ttyd   ⚠ 下载失败(连不上 github.com),改用包里自带的 1.7.7
 > 路径可以用 `TMUXD_JSON` 指到别处。理由和 `TMUXD_CONFIG` 一样:
 > 跑测试的时候不能让开发机上真实的那份掺进来。
 
+### 4.2 `install` 一个参数都没有
+
+早先的稿子有 `--tmux-bin` / `--ttyd-bin` / `--refresh`。**全砍了。**
+
+指定用哪个二进制,已经有一个地方了 —— **就是这个 json**。再给一个参数去写同样那两个键,
+是**两条路做同一件事**;而两条路就意味着"参数和文件不一致时听谁的"这种问题,
+以及回答它所需要的每一行代码。
+
+于是规则塌缩成一句:
+
+> **json 里有,就只检查,不安装;json 里没有,才去装,装完写进去。**
+
+| 你想 | 怎么做 |
+| --- | --- |
+| 指定某个二进制 | 编辑 `~/.tmuxd.json` |
+| 换一个新的 ttyd | `rm ~/.tmuxd.json`,再跑一次 `tmuxd install` |
+| 撤销全部 | `rm ~/.tmuxd.json` |
+
+**幂等是白拿的**:第二次跑什么都不做,因为文件里已经有了。
+
 ## 5. 谁读它:库默认就读
 
 用户要的是"下次不管 lib 还是 server 都自动读到"。**这个文件里只有机器事实,所以库读它是安全的:**
@@ -151,21 +171,24 @@ tmux                                    ttyd
 **json 排在 PATH 前面**,因为它是显式的:你跑过 `install`,就是表达了"用这一份"。
 不想要就 `rm ~/.tmuxd.json`,顺序自动退回从 ④ 开始 —— 也就是**没跑过 install 的那台机器**。
 
-### 6.1 `Tmuxd()` 每次构造都会再验一遍
+### 6.1 文件里那条不能用,就**报错**,不绕过去
 
-json 里记的是**上一次**的事实,而事实会过期:二进制被删、被 `apt upgrade` 搬走、
-`~/.tmuxd/bin` 被清理掉。所以读到路径**不等于**就用它 —— 每一级取到的候选,
-都要过和现在一样的那套合格性检查(tmux ≥ 3.0、ttyd ≥ 1.6,见 [06 §3.2](06-dependencies.md))。
+每次构造都复验 ③ —— 二进制会被删、被 `apt upgrade` 搬走。但验不过的处理方式是
+**报错**,不是悄悄退回 PATH:
 
-**没过就当作没配,继续往下找**,并且说一声:
-
-```console
-$ tmuxd ls
-⚠ ~/.tmuxd.json 记的 ttyd 已经不在了,改用 PATH 上的;tmuxd install 可以修好
+```
+TtydMissing: /opt/my-ttyd (named by ~/.tmuxd.json) cannot run, or is older than 1.6.
+  fix that line, delete it, or run `tmuxd install` again.
+  it is not silently replaced -- you would be running something other than what the file says.
 ```
 
-这是这个设计里唯一一处"文件说的话可能是假的",所以处理方式必须是**降级而不是报错** ——
-一个陈旧的缓存文件,不该让本来能跑的机器跑不起来。
+早先的稿子写的是"降级并 warn",理由是"一个陈旧的缓存不该让能跑的机器跑不起来"。
+**那个理由随着 §4.2 一起没了** —— 没有 `--ttyd-bin` 之后,编辑这个文件就是**指定二进制
+的唯一方式**,所以它不再是缓存,而是**一句话**。悄悄换一个去跑,等于跑的东西和文件里
+写的不是一个,而文件还在那儿声称是它。**那比停下来糟。**
+
+规则因此和 `ttyd_bin=` 完全一致:**你点名的东西坏了,是错误,不是换一个的理由。**
+修法就一条 —— 改那一行,或者删掉它。
 
 ## 7. 版本检查是这条命令的一半
 
@@ -183,7 +206,8 @@ ttyd   ✓ 1.7.7         ~/.tmuxd/bin/ttyd
 无需改动。
 ```
 
-**幂等**:装好了就什么都不做。要强制换一份用 `--refresh`。
+**幂等是文件带来的,不是逻辑带来的**(§4.2):第二次跑时 json 里已经有了,于是只检查。
+要换一份就 `rm ~/.tmuxd.json`。
 
 版本太旧的处理和 [06 §3.2](06-dependencies.md) 一致:tmux 太旧**报错**(它没得退),
 ttyd 太旧**降级**到自带的或重新下载。
@@ -227,12 +251,12 @@ ttyd 太旧**降级**到自带的或重新下载。
 ```console
 ① 网络不通,自带的能用
    ttyd  ⚠ 下载失败(连不上 github.com),改用包里自带的 1.7.7
-         网络恢复后:tmuxd install --refresh
+         网络恢复后:rm ~/.tmuxd.json 再跑一次
 
 ② 网络不通,这个架构也没自带的
    ttyd  ✗ 下载失败,而且没有 s390x 的自带版本
          手动:从 https://github.com/tsl0922/ttyd/releases 下 ttyd.s390x
-               放到任意位置,然后 tmuxd install --ttyd-bin /path/to/ttyd
+               放到任意位置,然后把路径写进 ~/.tmuxd.json
 
 ③ 校验和对不上
    ttyd  ⚠ 校验和不符,已丢弃(期望 8a217c… 实际 3f91ab…)
@@ -261,19 +285,20 @@ ttyd 太旧**降级**到自带的或重新下载。
 - ❌ **默认自动下载** —— 只在你敲了这条命令时才发生(§8);
 - ❌ **碰 `~/.tmuxd.conf`** —— 那是人写的 CLI 配置,机器只写自己的 json(§4.1);
 - ❌ **给 json 加第三个键** —— 端口、token 这些是行为,只能从调用方来(§5);
+- ❌ **`--tmux-bin` / `--ttyd-bin` / `--refresh`** —— 指定二进制只有一个地方,就是那个 json(§4.2);
 - ❌ **指定 ttyd 版本** —— 装 latest。一个 `--ttyd-version` 会拖出版本比较、老版本没校验和的政策、“要 X 给 Y”的措辞,全为一个没人提的需求(§8.1);
-- ❌ **自动更新** —— 没有后台检查、没有"发现新版本"提示。要换就自己 `--refresh`。
+- ❌ **自动更新** —— 没有后台检查、没有“发现新版本”提示。要换就自己 `rm ~/.tmuxd.json`。
 
 ## 11. 影响清单
 
 | 改哪 | 改什么 |
 | --- | --- |
 | `tmuxd/install.py`(新) | 体检、下载+校验、写 json;`tmux` 的包管理器探测 |
-| `tmuxd/cli.py` | 新增 `install` 子命令(`--refresh` / `--tmux-bin` / `--ttyd-bin`) |
+| `tmuxd/cli.py` | 新增 `install` 子命令,**没有任何参数** |
 | `tmuxd/toolchain.py`(新) | 读写 `~/.tmuxd.json` 这两个键,库和 CLI 共用;`TMUXD_JSON` 可改路径 |
-| `tmuxd/core.py` | 查找顺序插入 json 一级(§6);每次构造复验,失效则降级并提示一次 |
+| `tmuxd/core.py` | 查找顺序插入 json 一级(§6);每次构造复验,不合格就报错(§6.1) |
 | `tmuxd/tmux.py` | `find_binary` 接受 json 来的路径;`TmuxMissing` 带上按发行版的安装命令 |
-| `tests/installing/`(新场景) | 网络优先与降级、校验和不符不装、json 只有两个键、失效路径降级、幂等、**没有 json 时行为不变** |
+| `tests/installing/`(新场景) | 网络优先与降级、校验和不符不装、json 只有两个键、坏条目报错而不是绕过、已有配置不改写、**没有 json 时行为不变** |
 | `tests/nothing_reads/` | 命令集从 13 条变 14 条 |
 | `docs/v1/cli/install.md`(新) | 使用文档 |
 | [`06 §7`](06-dependencies.md) | 那条"不做"改写成 §8 的措辞 |
