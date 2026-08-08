@@ -155,7 +155,6 @@ ttyd --version   →  低于 1.6 视为不合格
 ```
 tmuxd/data/ttyd/
 ├── ttyd.x86_64      ← 绝大多数服务器和桌面
-├── ttyd.aarch64     ← ARM 服务器、树莓派 64 位、Apple Silicon 上的 Linux 容器
 ├── ttyd.arm         ← 32 位 ARM
 └── LICENSE          ← ttyd 是 MIT,必须随包带上署名(§4.2)
 ```
@@ -163,16 +162,21 @@ tmuxd/data/ttyd/
 | `platform.machine()` | 用哪个 |
 | --- | --- |
 | `x86_64` / `amd64` | `ttyd.x86_64` |
-| `aarch64` / `arm64` | `ttyd.aarch64` |
 | `armv7l` / `armv6l` / `arm` | `ttyd.arm` |
-| 其余 | 没有自带的可用 → 报错 |
+| 其余(含 `aarch64` / `arm64`) | 没有自带的可用 → 报错,给上游 releases 链接 |
+
+> **`aarch64` 不在自带清单里,这是一处需要知情的取舍。**
+> 64 位 ARM(Graviton、树莓派 64 位系统、ARM 云主机)**跑不了 `ttyd.arm`** ——
+> 那是 32 位 ELF,只有在开了 `CONFIG_COMPAT` 的内核上才可能执行,
+> 而不少发行版的 aarch64 版本已经关掉了 32 位支持。所以这些机器会落到"报错 + 自己装"。
+> 要覆盖它们,把上游的 `ttyd.aarch64` 放进这个目录就行 —— **查找机制一行都不用改。**
 
 **只在 Linux 上生效。** 上游的静态二进制是 musl 构建的 ELF,macOS / BSD 跑不了 ——
 那些平台上第三级直接跳过,报错里给 `brew install ttyd`。这一点必须写明白,
 不能让 macOS 用户以为"包里带了所以应该能用"。
 
-> 要不要带 `ttyd.i686` / `ttyd.mips` 之类,取决于面向什么机群。
-> 每多一个约 +1.4MB,而查找机制不用改一行 —— **加架构就是往目录里多放一个文件。**
+> 要不要补 `ttyd.aarch64` / `ttyd.i686` / `ttyd.mips`,取决于面向什么机群。
+> 每多一个约 +1.2MB,而查找机制不用改一行 —— **加架构就是往目录里多放一个文件。**
 
 ### 3.4 可执行位:wheel 里保不住
 
@@ -222,10 +226,10 @@ ttyd 是 MIT,再分发合法,但**必须随包带上它的 LICENSE 和版权声�
 | --- | --- | --- |
 | 发版 | 每个平台一个 wheel,要 CI 矩阵 | **一个 wheel,一次上传** |
 | 冷门平台 | 落到 sdist,行为不同 | 行为一致(都是"没自带的就报错") |
-| 体积 | 每个 wheel 小 | **+2.8MB(两个)/ +4.2MB(三个)** |
+| 体积 | 每个 wheel 小 | **+2.4MB(两个);每多一个架构约 +1.2MB** |
 | 用不到的人 | 不下载 | 也下载了(`port=None` 的用户白背) |
 
-**用体积换掉整个构建矩阵。** 对一个 40KB 的纯 Python 包来说 3MB 不算小,
+**用体积换掉整个构建矩阵。** 对一个 40KB 的纯 Python 包来说 2.4MB 不算小,
 但比起"维护 4 条 CI 流水线 + 两种安装路径的行为差异",这笔交易划算 ——
 尤其因为**没有矩阵就没有"某个平台忘了发"这种事故**。
 
@@ -240,8 +244,8 @@ ttyd 是 MIT,再分发合法,但**必须随包带上它的 LICENSE 和版权声�
      已装但不在 PATH:Tmuxd(tmux_bin=…) 或 TMUXD_TMUX_BIN
 
 ② 没有 ttyd,而且这个架构没有自带的
-   TtydMissing: ttyd not found, and no bundled build for linux/ppc64le
-     包里自带:x86_64, aarch64, arm
+   TtydMissing: ttyd not found, and no bundled build for linux/aarch64
+     包里自带:x86_64, arm
      自己装:https://github.com/tsl0922/ttyd/releases
      或者不要网页入口:Tmuxd(port=None) 照样能管会话、往里敲
 
