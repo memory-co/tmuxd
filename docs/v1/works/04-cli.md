@@ -1,8 +1,10 @@
 # 04 · CLI
 
-CLI 是**套在库外面的第三个壳**([01 §1](01-library.md))。它不走 HTTP ——
-本地跑的时候直接 `import tmuxd`,和你自己写 Python 调的是同一份代码。
-只有加了 `-H` 指向远端时才走 HTTP([03 §8](03-http.md))。
+CLI 是**套在库外面的第三个壳**([01 §1](01-library.md))。它**永远直接
+`import tmuxd`**,和你自己写 Python 调的是同一份代码 —— 一次 HTTP 都不走。
+
+要驱动别的机器上的 tmuxd,用 `ssh`:`ssh box tmuxd send -t work "…"`。
+理由见 §5。
 
 **tmux 是参考,不是对齐目标。** 借它的短字母是因为顺手,不是因为要兼容它 ——
 tmuxd 的语法是 tmuxd 自己的,而它真正要对齐的是**同一个家族里的 webmuxd**(§3.1)。
@@ -19,6 +21,7 @@ tmuxd 的语法是 tmuxd 自己的,而它真正要对齐的是**同一个家族�
 | --- | --- |
 | 我 ssh 在那台机器上,想开个会话自己干活 | `tmux`(你自己的 socket,与 tmuxd 无关) |
 | 我要在远端机器上跑一条命令、拿输出和退出码 | **`ssh`** —— 不是 tmuxd([03 §2](03-http.md)) |
+| 我要驱动**另一台机器上**的 tmuxd | **`ssh box tmuxd …`** —— 没有 `-H`,见 §5.1 |
 | 我要在一个**有人在看**的会话里投喂一条指令 | `tmuxd send` |
 | 我要开个会话,把入口发给别人 | `tmuxd new` + `tmuxd url` |
 | 我要看 tmuxd 手里现在有哪些会话、谁挂着 | `tmuxd ls` |
@@ -80,7 +83,6 @@ tmuxd new  [-t ID] [-c DIR] [-e K=V]... [-- CMD...]
 tmuxd ls   [-F FORMAT]
 tmuxd url    -t ID [-o]          # 打印入口 URL;-o = 顺手用默认浏览器打开
 tmuxd kill   -t ID
-tmuxd rename -t ID NEW
 tmuxd has    -t ID
 ```
 
@@ -195,34 +197,37 @@ $ tmuxd keys -t work C-c
 **`tmuxd send -t x "Enter the code"` 打进去的就是这七个词,不会变成一个回车。**
 这是 tmux 的 `send-keys` 最容易咬人的地方,壳这一层直接消掉。
 
-## 5. 实例与远端
+## 5. 实例,以及"远端"这件事
 
-`-L` 换的是 **tmuxd 实例**,和 tmux 的写法一致:
+`-L` 换的是 **tmuxd 实例**:
 
 ```bash
-tmuxd -L ci new -s build     # 另一套实例:自己的端口、自己的状态目录、自己的 tmux 池
+tmuxd -L ci new -t build     # 另一套实例:自己的端口、自己的状态目录、自己的 tmux 池
 ```
 
 **实例名同时决定它的 tmux socket**(`-L ci` → `tmux -L tmuxd-ci`),
 所以两套实例的会话池互不可见,也都不碰你自己的 tmux —— 一个概念,不是两个
 ([01 §4](01-library.md))。
 
-`-H` 指向一个**开了 HTTP 的远端 tmuxd**([03](03-http.md)):
+### 5.1 没有 `-H`:远端交给 ssh
 
 ```bash
-tmuxd -H http://box:12346 ls
-export TMUXD_HOST=http://box:12346
-export TMUXD_TOKEN=…
+ssh box tmuxd new -t work -c ~/proj
+ssh box tmuxd send -t work "npm test" --enter
+ssh box tmuxd url -t work
 ```
 
-这是 CLI 唯一走 HTTP 的时候。**能做的事因此少一档** ——
-`serve` / `start` / `stop` 在 `-H` 下报错,因为进程生命周期是对面那台机器的事
-([03 §8](03-http.md)):
+早先的稿子有个 `-H` 指向远端 tmuxd 的 HTTP 口,**去掉了**。`ssh` 覆盖它的全部用途,
+而且更好:
 
-```console
-$ tmuxd -H http://box:12346 stop
-✗ 远端模式下不能 stop —— ttyd 的生死归对面那个进程管
-```
+- **不用多开一个端口**,不用再管一份 token;
+- **复用 ssh 的鉴权和审计** —— 谁在什么时候敲了什么,你的 sshd 日志里本来就有;
+- **CLI 因此只有一条代码路径**。原来 `-H` 模式下 `serve` / `start` / `stop` 要
+  特殊报错(进程生命周期是对面的事)、退出码要多一档、错误要多两类 ——
+  **一条只在少数人用、却让所有人多背一套分支的路径,不值得。**
+
+HTTP 壳([03](03-http.md))照旧存在,它是给**够不着 shell** 的调用方留的:
+别的语言、别的容器、CI runner。有 ssh 的人本来就不需要它。
 
 ## 6. 配置
 
@@ -272,10 +277,12 @@ tmux 是参考,所以这张表不是"违规清单",而是**给带着 tmux 肌肉
 | 2 | 用法错误(参数不对) |
 | 3 | 会话不存在(`has` 用这个) |
 | 4 | 状态不对(`session_exists` / `bad_id` / `port_in_use`) |
-| 5 | 连不上远端 tmuxd(`-H` 模式:`unreachable` / `unauthorized`) |
+| 5 | *保留* —— 曾是"连不上远端 tmuxd",`-H` 去掉后没有产出者(§5.1) |
 | 6 | tmux server 没了(`tmux_gone`) |
 
-4 可以改参数重试,5 检查配置,**6 该告警**。和库的异常一一对应([03 §6](03-http.md))。
+4 可以改参数重试,**6 该告警**。和库的异常一一对应([03 §6](03-http.md))。
+
+**5 空着不复用。** 已经发出去的退出码含义不该改 —— 有人的脚本可能在判 5。
 
 ## 9. CLI ↔ 库对照
 
@@ -290,12 +297,11 @@ CLI 不做任何库没有的事,每条命令就是一次调用:
 | `ls` | `t.sessions()` |
 | `url` | `s.url` |
 | `kill` | `s.kill()` |
-| `rename` | `s.rename(new_id)` |
 | `has` | `t.get(id)` 抓不抓得到 |
 | `send` | `s.send(text, enter=)` |
 | `keys` | `s.send_key(*keys)` |
 
-**十一条命令,十一个库调用,一一对应。** 唯一多出来的东西是输出格式化和退出码映射,
+**每条命令就是一次库调用,一一对应。** 唯一多出来的东西是输出格式化和退出码映射,
 两样都在壳里做,不进库 —— 连 id 解析都没有,它就是原样传过去的字符串。
 `--json` 在 `ls` / `info` 上可用,输出就是库对象序列化后的样子,和 HTTP 那层完全一致。
 

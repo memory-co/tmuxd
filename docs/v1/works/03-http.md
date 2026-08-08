@@ -85,7 +85,7 @@ t.serve_http(port=12346, token="changeme")   # ← 默认不起,要暴露才调
 
 ## 4. 端点总表
 
-**八个,一一对应库上的方法。** 这层不发明任何库里没有的东西。
+**七个,一一对应库上的方法。** 这层不发明任何库里没有的东西。
 
 | 方法 | 路径 | 库里对应 |
 | --- | --- | --- |
@@ -93,7 +93,6 @@ t.serve_http(port=12346, token="changeme")   # ← 默认不起,要暴露才调
 | `POST` | `/api/sessions` | `t.session(id, cwd, cmd, env)` —— 无中生有 |
 | `GET` | `/api/sessions/{id}` | `t.get(id)` |
 | `DELETE` | `/api/sessions/{id}` | `s.kill()` |
-| `POST` | `/api/sessions/{id}/rename` | `s.rename(new_id)` |
 | `POST` | `/api/sessions/{id}/keys` | `s.send(...)` / `s.send_key(...)`,见 §5 |
 | `GET` | `/api/info` | `t.info()` —— 版本、ttyd 端口、tmux 二进制与版本、会话统计 |
 | `GET` | `/api/health` | 免鉴权 |
@@ -180,7 +179,8 @@ POST /api/sessions/id5/keys
 库里两个异常基类 —— `SessionError`(你要的东西不对,能改)和
 `PlatformError`(环境不对,该告警)—— 和上表一一对应。
 **HTTP 的错误码是库异常的投影,不是另立一套**:`errors.py` 里每个类带一个 `code`,
-HTTP 壳原样序列化,`RemoteTmuxd` 再按 `code` 把它还原成同一个异常类。
+HTTP 壳原样序列化。调用方拿到 `code` 想怎么映射回自己的异常都行 ——
+但那是调用方的事,tmuxd 不替它做(§8)。
 
 **没有 `timeout`、没有 `not_a_shell`、没有 `read_only`、没有 `cmd_not_found`**
 —— 对应的功能都不在了。命令跑不起来不是一种错误码,是那个会话在列表里显示 `exited`
@@ -202,30 +202,32 @@ HTTP 壳原样序列化,`RemoteTmuxd` 再按 `code` 把它还原成同一个异�
 薄到**用标准库的 `http.server` 就写完了**,整个包因此零运行时依赖。
 一个 Web 框架在这里帮不上什么忙,却会成为每个 `pip install tmuxd` 的人的负担。
 
-## 8. 远程调用方
+## 8. 不带客户端
 
-要在别的机器上用,起一个 HTTP 客户端就行 —— 但它**不是**本地库的等价物,
-差别要写明白:
+早先的稿子里有个 `RemoteTmuxd` —— 一个方法名和 `Tmuxd` 对齐、走 HTTP 打到别的机器的
+Python 客户端。**删掉了。**
 
-```python
-from tmuxd import RemoteTmuxd
+理由和这一层的其他决定是同一条:**已经有人把这件事做好了,别再做一遍。**
 
-t = RemoteTmuxd("http://box:12346", token="…")   # 只有库的一个子集
-s = t.session(id="id5", cwd="/srv/app", cmd="claude")
-s.send("继续", enter=True)
-print(s.url)                                      # http://box:12345/?arg=id5
-```
+- **要在 Python 里打远端,`requests` / `httpx` 就够。** 七个端点、JSON 进 JSON 出、
+  没有长连接、没有流 —— 一个客户端库在这里帮不上什么忙。
+- **要在命令行上打远端,用 `ssh`。**
+  ```bash
+  ssh box tmuxd send -t work "npm test" --enter
+  ```
+  这比开一个 HTTP 口更好:不用多开端口、不用管 token、复用 ssh 的鉴权和审计。
+  **HTTP 那层是给"够不着 shell"的调用方留的**(别的语言、别的容器、CI runner),
+  而"我有 ssh"的人本来就不需要它。
+- **最要紧的一条:它是个像 `Tmuxd` 但不是 `Tmuxd` 的东西。** 方法名一样,
+  但管不了 ttyd 的生死、没有 `close()`、没有 `serve_http()`、多两类错误。
+  **一个看起来一样其实不一样的东西,比一个明显不同的东西更容易让人写错。**
+  这个项目在别处一直在躲这种坑(不做只读、不做事件流、不做 window/pane),
+  这里没理由自己挖一个。
 
-| | `Tmuxd`(本地库) | `RemoteTmuxd`(HTTP) |
-| --- | --- | --- |
-| 建会话 / 列 / 删 / 敲 | ✅ | ✅ |
-| 拿 attach URL | ✅ | ✅ |
-| **管 ttyd 的生死** | ✅ 起它、绑它、复用它 | ❌ 那是对面进程的事 |
-| **`with` 退出时收摊** | ✅ | ❌ 没有可收的东西 |
-| 出错的方式 | 本地异常 | 多一类:连不上、超时、401 |
+CLI 的 `-H` 远端模式一并去掉 —— 它本来就只是套在 `RemoteTmuxd` 外面的壳,
+而 `ssh box tmuxd …` 覆盖了它的全部用途([04 §5](04-cli.md))。
 
-方法名和参数**刻意保持一致**,这样代码从本地搬到远程只改构造那一行。
-但**不假装它们完全一样** —— 进程生命周期这件事,远程那头替你管不了。
+**HTTP 壳本身照旧。** 去掉的是"我们也提供一个客户端",不是"可以被远程调用"。
 
 ## 9. 版本
 

@@ -1,4 +1,4 @@
-# 会话:new / ls / url / kill / rename / has
+# 会话:new / ls / url / kill / has
 
 一个会话就是**一个终端**:一个 id、一个启动目录、一条启动命令。没有 window,没有 pane,
 没有第四个字段。
@@ -141,14 +141,13 @@ killed work (2 client(s) thrown out)
 
 ---
 
-## `tmuxd rename`
+## 没有 `rename`
 
-```console
-$ tmuxd rename -t old new
-old → new
-```
+**id 是身份,不是标签。** 你从自己的世界算出这个 id,靠它重入 ——
+改名之后,下次按同样规则算出的还是**原来那个 id**,却找不到现场了。
+`rename` 正好破坏 id 存在的唯一理由。
 
-新 id 已被占用会报 `session_exists`(退出码 4),不会覆盖。
+要换 id:`tmuxd kill -t old` 再 `tmuxd new -t new`。显式的。
 
 ---
 

@@ -1,7 +1,10 @@
 # tmuxd CLI
 
-命令行是**套在库外面的壳**。本地跑的时候它直接 `import tmuxd`,和你自己写 Python 调的是
-同一份代码;只有 `-H` 指向远端时才走 HTTP。
+命令行是**套在库外面的壳**。它**永远直接 `import tmuxd`**,和你自己写 Python 调的是
+同一份代码 —— 一次 HTTP 都不走。
+
+要驱动别的机器上的 tmuxd:`ssh box tmuxd send -t work "…"`。没有 `-H`
+([为什么](../works/04-cli.md))。
 
 设计依据见 [`../works/04-cli.md`](../works/04-cli.md),这里是命令本身。
 
@@ -39,12 +42,11 @@ work                 alive   1 client   node     /home/me/proj
 | `ls` | 列会话 | [sessions.md](sessions.md) |
 | `url` | 打印入口地址 | [sessions.md](sessions.md) |
 | `kill` | 销毁一个会话 | [sessions.md](sessions.md) |
-| `rename` | 换 id | [sessions.md](sessions.md) |
 | `has` | 存在就退出 0,给脚本用 | [sessions.md](sessions.md) |
 | `send` | 往里打**字面量文本** | [keys.md](keys.md) |
 | `keys` | 往里**按键**(`C-c`、`Enter`…) | [keys.md](keys.md) |
 
-**十三条命令,每条就是一次库调用。** 没有任何命令能做库做不到的事。
+**每条命令就是一次库调用。** 没有任何命令能做库做不到的事。
 
 ## 会话 id:`-t` / `--id`
 
@@ -81,10 +83,9 @@ tmuxd new -s build -L ci                 # ❌ 不认
 | 选项 | 说明 |
 | --- | --- |
 | `-L, --socket NAME` | 实例名。**同时决定它的 tmux socket**(`-L ci` → `tmux -L tmuxd-ci`) |
-| `-H, --host URL` | 驱动一个开了 HTTP 的远端 tmuxd;唯一走 HTTP 的模式 |
 | `--port N` | ttyd 端口(入口地址用它) |
 | `--bind ADDR` | ttyd 绑哪。非回环地址**必须**配 `--token`,否则拒绝启动 |
-| `--token T` | ttyd 的 basic auth 密码(用户名固定 `tmuxd`);`-H` 模式下是 Bearer token |
+| `--token T` | ttyd 的 basic auth 密码(用户名固定 `tmuxd`) |
 | `--state-dir DIR` | 状态目录,默认 `~/.tmuxd` |
 | `--json` | 原样输出 API 的 JSON(`ls` / `info` / `status`) |
 | `--version` | |
@@ -100,7 +101,7 @@ tmuxd new -s build -L ci                 # ❌ 不认
 | 2 | 用法错误(参数不对) | 改命令 |
 | 3 | 会话不存在(`has` 用这个) | |
 | 4 | 状态不对(`session_exists` / `bad_id` / `port_in_use`) | 改参数重试 |
-| 5 | 连不上远端 tmuxd(`unreachable` / `unauthorized`) | 检查 `-H` 和 token |
+| 5 | *保留* —— 曾是"连不上远端 tmuxd",`-H` 去掉后没有产出者 | — |
 | 6 | tmux server 没了(`tmux_gone`) | **告警,别重试** |
 
 ```bash
@@ -137,7 +138,6 @@ set -g open-cmd      "firefox %u"     # %u = 会话 URL,给 tmuxd url -o 用
 | --- | --- |
 | `TMUXD_PORT` / `TMUXD_BIND` / `TMUXD_TOKEN` | `--port` / `--bind` / `--token` |
 | `TMUXD_SOCKET` | `-L` |
-| `TMUXD_HOST` | `-H` |
 | `TMUXD_STATE_DIR` | `--state-dir` |
 | `TMUXD_WORKSPACE` | 新会话的默认 `cwd` |
 | `TMUXD_SHELL` | 不给命令时跑什么 |

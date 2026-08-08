@@ -1,34 +1,119 @@
-# `Session`
+# 会话
 
-一个终端。**三个存下来的字段 —— id、cwd、cmd —— 加上随时问 tmux 要的几个实时值。**
+**一个会话就是一个终端**:一个 id、一个启动目录、一条启动命令。没有 window,没有 pane,
+没有第四个字段。
 
-不要自己构造它,从 `t.session()` / `t.get()` / `t.sessions()` 拿。
-
-```python
-s = t.session(id="id5", cwd="~/proj", cmd="claude")
-```
-
-没有 window,没有 pane:tmux 的多路复用在这一层不用,也不暴露。
-要几个终端就开几个会话。
+这一篇讲会话的全部:**怎么建、怎么取、拿到之后能干什么**。
+实例本身(构造参数、ttyd、socket)在 [tmuxd.md](tmuxd.md)。
 
 ---
 
-## 存下来的字段
+## 建一个,或者接上已有的
+
+### `t.session(id=None, cwd=None, cmd=None, env=None) -> Session`
+
+**有则接上,无则创建**(`tmux new-session -A` 的语义)。最常用的一个。
+
+```python
+s = t.session(id="work", cwd="~/proj", cmd="npm run dev")
+s = t.session(id="work")            # 再来一次:接上原来那个
+s = t.session()                     # id 不给就生成:"0"、"1"、"2"…
+```
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `id` | 生成 | 不能含 `.` `:`,不能以 `-` 开头,不能为空,≤200 字符 |
+| `cwd` | 实例的 `workspace` | `~` 会展开,相对路径按当前进程的 cwd 解析成绝对路径 |
+| `cmd` | 默认 shell | 一整条命令行字符串,交给 tmux 起 |
+| `env` | 无 | `{"K": "V"}`,落到 `tmux new-session -e` |
+
+**已存在的会话不会因为这次给的 `cwd` / `cmd` 不同而被重建 —— id 说了算。**
+要换命令就先 `kill()` 再建,显式的。
+
+**命令不存在不会抛异常**:会话建起来后立刻退出,`status` 是 `exited`。
+这和你在自己终端里敲错命令是一回事。
+
+抛:`BadId`、`TmuxGone`。
+
+### `t.create(id=None, cwd=None, cmd=None, env=None) -> Session`
+
+同上,但 id 已存在时抛 `SessionExists` 而不是接上。
+
+用在"我确信这是个新东西"的地方 —— 撞了说明有 bug,该让它响。
+
+### `t.get(id) -> Session`
+
+**只接不建**,不存在抛 `NoSuchSession`。
+
+```python
+try:
+    t.get("work").send("继续", enter=True)
+except NoSuchSession:
+    ...
+```
+
+`session()` 和 `get()` 是两个动词而不是一个布尔参数,因为
+**"我以为会接上结果开了个新的"是最难查的那类 bug**。
+
+### `t.has(id) -> bool`
+
+存在返回 `True`。id 非法也返回 `False`(不抛)。
+
+```python
+if not t.has("work"):
+    t.session(id="work", cwd="~/proj")
+```
+
+### `t.sessions() -> list[Session]`
+
+全部会话,**每次都现场跑一次 `tmux ls`**,不读缓存。
+
+```python
+for s in t.sessions():
+    print(s.id, s.status, s.clients, s.current_command)
+```
+
+这个方法同时做三件事:
+
+- **对账**:记录里有、tmux 里没有的标 `exited`;<a id="external"></a>tmux 里有、
+  记录里没有的标 `external`(有人绕过库直接开的 —— 列出来,**既不杀也不收编**);
+- **回收**:`exited` 且超过 `gc_ttl` 的记录删掉。**只删 JSON 文件,永远不 kill 活会话**;
+- 顺带刷新 `clients` / `current_command` 这些实时字段。
+
+> **对账只在这里发生 —— 没有后台线程,没有定时器。**
+> 一个被 `import` 进来的库不该背着调用方每 60 秒醒一次、写一次盘。
+
+**tmux server 还没起来时返回 `[]`,不是抛异常** —— tmux 在 server 不存在时以 exit 1
+报 `error connecting to ...`,库把它读成空列表。这是实现上最容易写错的一处。
+
+### `t.url_for(id) -> str`
+
+不需要会话存在,纯算字符串。
+
+```python
+t.url_for("work")        # http://127.0.0.1:12345/?arg=work
+```
+
+---
+
+## `Session`
+
+不要自己构造它,从上面几个方法拿。
+
+### 存下来的字段
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | `str` | 身份。`rename()` 之后这个属性会跟着变 |
+| `id` | `str` | 身份 |
 | `cwd` | `str \| None` | 启动目录(绝对路径)。external 会话是 `None` |
 | `cmd` | `str \| None` | 启动命令。没给就是 `None`(跑默认 shell) |
 | `created_at` | `str \| None` | ISO 8601 UTC,如 `"2026-08-08T09:00:00Z"` |
 | `last_attached` | `str \| None` | 上次通过库接上的时间 |
-| `external` | `bool` | `True` = 有人绕过库直接开的,tmuxd 只列不管 |
+| `external` | `bool` | `True` = 有人绕过库直接开的 |
 
 这些是 tmux **答不上来**的那部分,存在状态文件里。tmux 只知道"有个叫 id5 的会话活着"。
 
----
-
-## 实时值:每次访问都问一次 tmux
+### 实时值:每次访问都问一次 tmux
 
 **都是 property,不缓存。** 拿到手就是当下的事实。
 
@@ -44,15 +129,13 @@ if s.alive and s.clients == 0:
     print("没人在看", s.url)
 ```
 
-`current_command` 是"这个会话现在在干嘛"最便宜的答案 —— 它不是读屏幕内容,
+`current_command` 是"这个会话现在在干嘛"最便宜的答案 —— 它不读屏幕内容,
 只是问 tmux 前台进程叫什么。
 
-> 每次访问都是一次 `tmux` 子进程调用。在循环里连着读四个属性就是四次调用;
+> 每次访问都是一次 `tmux` 子进程调用。连着读四个属性就是四次调用;
 > 要一次拿全用 [`to_dict()`](#to_dict)。
 
----
-
-## `url`
+### `url`
 
 ```python
 print(s.url)      # http://127.0.0.1:12345/?arg=id5
@@ -60,8 +143,7 @@ print(s.url)      # http://127.0.0.1:12345/?arg=id5
 
 **入口地址本身** —— ttyd 原生的 `?arg=`,没有跳转、没有代理。
 可以直接贴给人,它不依赖任何还活着的 Python 进程去解析。
-
-id 里的特殊字符会被百分号编码。`Tmuxd(port=None)` 时是 `None`。
+id 里的特殊字符会被百分号编码。
 
 > **拿到这个 URL 和 token 的人能进这个池里的任何会话** —— ttyd 的鉴权是进程级的。
 > 要按会话授权,在 ttyd 前面套一层你自己的代理。
@@ -109,18 +191,7 @@ s.send_key("Escape", ":", "w", "q", "Enter")
 
 ---
 
-## 生命周期
-
-### `rename(new_id) -> Session`
-
-```python
-s.rename("after")
-s.id        # "after"
-```
-
-新 id 已被占用抛 `SessionExists`;非法抛 `BadId`;会话不在抛 `NoSuchSession`。
-
-### `kill() -> int`
+## `kill() -> int`
 
 **销毁会话,返回被踢掉的客户端数。**
 
@@ -166,7 +237,9 @@ external 会话多一个 `"external": true`,并且 `cwd` / `cmd` / `created_at` 
 | `capture()` 抓屏 | 抓出来是**屏幕**不是日志,受宽度折行,全屏程序只给一帧 | 人打开 `s.url` |
 | `run()` 拿退出码 | 得往命令后面拼标记、还得先判断里面是不是闲着的 shell | `subprocess` / `ssh` |
 | `stream()` 输出流 | 要挂 `pipe-pane`、解析 ANSI、还会把密码落盘 | 同上 |
+| `rename()` | **id 是身份不是标签。** 调用方靠"同一个 id 指向同一个现场"重入,改名正好破坏这条 | `kill()` 掉再建一个 |
 | `resize()` | 尺寸只在有人 attach 时有意义,`window-size latest` 已经处理了 | — |
 | `split()` / window / pane | 多路复用是调用方的事:要几个终端开几个会话 | 多开会话 |
 
-完整论证见 [works/03-http.md §2](../works/03-http.md)。
+完整论证见 [works/02 §6.1](../works/02-session.md) 与
+[works/03 §2](../works/03-http.md)。

@@ -30,7 +30,7 @@ except PlatformError:
 | 类 | `code` | 什么时候 |
 | --- | --- | --- |
 | `NoSuchSession` | `no_such_session` | `get()` / `send()` / `kill()` 到一个不存在的 id |
-| `SessionExists` | `session_exists` | `create()` 撞了已有 id;`rename()` 的新名字被占了 |
+| `SessionExists` | `session_exists` | `create()` 撞了一个已有的 id |
 | `BadId` | `bad_id` | id 为空、含 `.` 或 `:`、以 `-` 开头、超过 200 字符 |
 
 ```python
@@ -55,8 +55,7 @@ except NoSuchSession:
 | `TtydFailed` | `ttyd_failed` | ttyd 起来就退了,或者没在超时内开始监听 |
 | `PortInUse` | `port_in_use` | 端口上是别人的东西 —— **不猜、不抢** |
 | `TmuxGone` | `tmux_gone` | tmux server 没了,或者某条 tmux 命令失败了 |
-| `Unauthorized` | `unauthorized` | token 不对(`RemoteTmuxd`) |
-| `Unreachable` | `unreachable` | 连不上远端(`RemoteTmuxd`) |
+| `Unauthorized` | `unauthorized` | HTTP 壳收到的 token 不对 |
 
 这几个重试没有意义:PATH 里长不出 tmux,端口不会自己空出来。
 
@@ -79,19 +78,15 @@ except PortInUse as exc:
     print(exc.details)    # {'port': 8080}
 ```
 
-`code` 不是给日志看的装饰 —— **HTTP 那层的错误码就是它原样序列化的**,
-而 `RemoteTmuxd` 收到响应后再按 `code` 还原成同一个异常类。所以:
+`code` 不是给日志看的装饰 —— **HTTP 那层的错误码就是它原样序列化的**:
 
 ```python
-local  = Tmuxd(port=12345)
-remote = RemoteTmuxd("http://box:12346", token="…")
-
-for t in (local, remote):
-    try:
-        t.get("ghost")
-    except NoSuchSession:      # 本地远程同一个 except,不用写两遍
-        ...
+{"error": "no_such_session", "message": "no session with id \"ghost\"",
+ "details": {"id": "ghost"}}
 ```
+
+远端调用方拿 `code` 映射回自己那边的异常随意,但**那是调用方的事**:
+tmuxd 不自带 HTTP 客户端([works/03-http.md §8](../works/03-http.md))。
 
 ---
 

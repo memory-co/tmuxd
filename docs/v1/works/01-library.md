@@ -64,8 +64,12 @@ tmuxd 只是把 id 填进去。
 | `:12346`(`serve_http` 给的) | tmuxd 的 HTTP | **不起** | 要暴露给外面才开([03](03-http.md)) |
 | tmux socket | tmux | 懒起 | **tmuxd 专属**,和你自己的 tmux 不是同一个(§4) |
 
-`port=None` 就不起 ttyd —— 纯 tmux 管理,没有网页入口。少见,但它是合法形态,
-说明**网页那半也是可拆的**。
+**没有“不起 ttyd”这个选项。** `tmuxd = tmux + ttyd`,缺一个都不成立 ——
+让 shell 活得比连接久是 tmux 的活,让人从浏览器进去是 ttyd 的活;
+少了后者,这东西就退化成“一个 tmux 的 Python 封装”,而那不是它。
+
+所以构造 `Tmuxd` 就意味着**一个完整的 tmuxd 在跑**:tmux 探得到,ttyd 在听。
+任一不满足,构造直接失败([06](06-dependencies.md))。
 
 ## 3. 进程模型:谁是谁的子进程
 
@@ -117,6 +121,23 @@ ttyd 在这套里只干一件事:把连接 exec 到 `attach.sh`。**它不持有
 判据是状态目录里按"端口 + socket"记的一份 pidfile。这条让"Web 后端每次重启都
 `Tmuxd(port=…)` 一下"变成安全操作 —— 否则每次重启都要么撞端口、要么把用户正连着的
 网页踢掉。
+
+### 3.2 那“只想看一眼”的命令怎么办
+
+既然构造就意味着“确保 ttyd 在跑”,`tmuxd ls` 这种只读命令怎么办?
+
+**有实例在跑时靠接手(§3.1)** —— 不重起、退出时也不带走,代价只是一次端口探测。
+
+**没有实例在跑时,不该顺手起一个门面然后立刻带走它。** 那既浪费又违反直觉:
+一条只读命令留下了副作用。正确的行为是**如实说没有**:
+
+```console
+$ tmuxd ls
+✗ 没有实例在跑(端口 7681 上没人听)。先 tmuxd start。
+```
+
+这比“起一个 50 毫秒就死的 ttyd”诚实,也和 `tmuxd = tmux + ttyd` 一致:
+**没有完整的 tmuxd,就没有 tmuxd 可查。**
 
 ## 4. 专属 socket:tmuxd 全权管理,不碰你的 tmux
 
@@ -252,7 +273,7 @@ ttyd -p 12345 -a -W -c tmuxd:<token> /opt/tmuxd/bin/attach.sh
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `port` | `7681` | ttyd 端口;`None` = 不起 ttyd |
+| `port` | `7681` | ttyd 端口,也是 `s.url` 里的那个 |
 | `bind` | `127.0.0.1` | ttyd 绑哪;`0.0.0.0` 时 `token` 必填 |
 | `token` | 无 | ttyd basic auth 的密码(用户名固定 `tmuxd`) |
 | `socket` | `tmuxd` | 实例名 → tmux socket + 状态目录(§4) |
@@ -264,7 +285,6 @@ ttyd -p 12345 -a -W -c tmuxd:<token> /opt/tmuxd/bin/attach.sh
 | `state_dir` | `~/.tmuxd` | 状态目录 |
 | `gc_ttl` | `7d` | `exited` 的 state 记录保留多久([02 §7](02-session.md)) |
 | `url_host` | 由 `bind` 推导 | `s.url` 里用的主机名(机器在 NAT/反代后面时给它) |
-| `start_ttyd` | `True` | `False` = 只管 tmux,不碰端口。CLI 的读命令走这条,免得 `tmuxd ls` 顺手起一个 ttyd 又立刻带走 |
 
 对应的 `TMUXD_*` 环境变量作为兜底(`TMUXD_PORT`、`TMUXD_TOKEN`…),
 优先级:构造参数 > 环境变量 > 默认。CLI 再往前压一层配置文件。
@@ -341,13 +361,12 @@ tmuxd/
 ├── tmuxd/                    # ← 核心就是这里
 │   ├── __init__.py           # Tmuxd、Session、异常,对外只有它们
 │   ├── core.py               # Tmuxd:构造、ttyd 生命周期、会话增删查、对账
-│   ├── session.py            # Session:send / send_key / rename / kill / url
+│   ├── session.py            # Session:send / send_key / kill / url
 │   ├── tmux.py               # 唯一一处拼 tmux 命令行的地方
 │   ├── ttyd.py               # 拉起 / 复用 / 绑生死(§3)
 │   ├── state.py              # 原子写、文件锁
 │   ├── errors.py             # 两个基类,HTTP 错误码是它们的投影
 │   ├── http.py               # 可选的 HTTP 壳(见 03),按需 import
-│   ├── remote.py             # RemoteTmuxd,同样按需 import
 │   ├── cli.py                # 命令行壳(见 04)
 │   └── data/                 # attach.sh + tmux.conf 模板,随包发出去
 └── tests/
@@ -357,6 +376,6 @@ tmuxd/
 
 - **`tmux.py` 是唯一拼 tmux 命令行的地方。** 不是洁癖:tmux 的 `-t` 目标语法(§9.1)、
   format 字符串、转义规则处处是坑,散在各处必然写歪;
-- **`import tmuxd` 不该拖进任何东西。** `http.py` / `remote.py` 都在用到时才 import,
+- **`import tmuxd` 不该拖进任何东西。** `http.py` 在用到时才 import,
   而且**整个包零运行时依赖** —— HTTP 壳是标准库 `http.server` 写的。
-  八个端点、没有长连接,一个 Web 框架在这里帮不上忙,却会成为所有人的安装负担。
+  七个端点、没有长连接,一个 Web 框架在这里帮不上忙,却会成为所有人的安装负担。

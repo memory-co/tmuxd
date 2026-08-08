@@ -25,18 +25,18 @@ print(s.url)                              # http://127.0.0.1:12345/?arg=id5
 
 | | 是什么 | 详见 |
 | --- | --- | --- |
-| [`Tmuxd`](tmuxd.md) | 一个实例:持有 ttyd、管一批会话 | [tmuxd.md](tmuxd.md) |
-| [`Session`](session.md) | 一个终端:`send` / `send_key` / `rename` / `kill` / `url` | [session.md](session.md) |
+| [`Tmuxd`](tmuxd.md) | 一个实例:一个 ttyd + 一个专属会话池 | [tmuxd.md](tmuxd.md) |
+| [会话](session.md) | 建 / 取 / 列,以及 `Session`:`send` / `send_key` / `kill` / `url` | [session.md](session.md) |
 | [异常](errors.md) | 两个基类,分"你能改"和"环境坏了" | [errors.md](errors.md) |
-| [`RemoteTmuxd`](remote.md) | 同样的方法名,走 HTTP 打到别的机器 | [remote.md](remote.md) |
 
 ```python
 from tmuxd import Tmuxd, Session, NoSuchSession, SessionExists, BadId, \
-                  TmuxGone, PortInUse, Unauthorized, Unreachable, __version__
+                  TmuxGone, PortInUse, __version__
 ```
 
-`RemoteTmuxd` 要 `from tmuxd import RemoteTmuxd` —— 它按需加载,
-`import tmuxd` 不会把 HTTP 那套拖进来。
+**没有远程客户端。** 要驱动别的机器上的 tmuxd,用 `ssh box tmuxd …`,
+或者直接拿 `requests` 打那八个 HTTP 端点 —— 理由见
+[works/03-http.md §8](../works/03-http.md)。
 
 ## 三条你必须知道的性质
 
@@ -66,7 +66,7 @@ with Tmuxd(port=12345) as t:
 
 ## 不读,只写
 
-**没有 `capture()`、没有 `run()`、没有 `stream()`。** 这是设计,不是没来得及做:
+**没有 `capture()`、没有 `run()`、没有 `stream()`,也没有 `rename()`。** 这是设计,不是没来得及做:
 
 | 你想干嘛 | 用什么 |
 | --- | --- |
@@ -120,7 +120,6 @@ for proj in projects:
 | `t.info()` | `tmuxd info` | `GET /api/info` |
 | `s.send(text, enter=)` | `tmuxd send -t ID TEXT --enter` | `POST /api/sessions/{id}/keys` |
 | `s.send_key(*keys)` | `tmuxd keys -t ID KEY...` | 同上,`{"keys": [...]}` |
-| `s.rename(new)` | `tmuxd rename -t ID NEW` | `POST /api/sessions/{id}/rename` |
 | `s.kill()` | `tmuxd kill -t ID` | `DELETE /api/sessions/{id}` |
 | `s.url` | `tmuxd url -t ID` | 响应里的 `url` 字段 |
 

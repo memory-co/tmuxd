@@ -1,6 +1,6 @@
-# `Tmuxd`
+# `Tmuxd` —— 实例
 
-一个实例:持有一个 ttyd 子进程,管一批开在**专属 tmux socket** 上的会话。
+一个实例 = **一个 ttyd + 一个专属 tmux 会话池**。
 
 ```python
 from tmuxd import Tmuxd
@@ -8,7 +8,14 @@ from tmuxd import Tmuxd
 t = Tmuxd(port=12345, token="changeme")
 ```
 
-构造完成时:**ttyd 已经在跑,tmux 一个进程都没有**(server 懒起,第一个会话时才拉起来)。
+构造完成时:**ttyd 已经在听,tmux 一个进程都没有**(server 懒起,第一个会话时才拉起来)。
+
+> **`tmuxd = tmux + ttyd`,缺一个都不成立。** 没有"只管 tmux 不要网页入口"这种模式 ——
+> 让 shell 活得比连接久是 tmux 的活,让人从浏览器进去是 ttyd 的活,少了后者
+> 这东西就退化成一个 tmux 封装。所以**构造就意味着一个完整的 tmuxd 在跑**:
+> tmux 探得到,ttyd 在听;任一不满足,构造直接失败。
+
+**建会话、取会话、往里敲** 全部在 [session.md](session.md)。这一篇只讲实例本身。
 
 ---
 
@@ -17,14 +24,14 @@ t = Tmuxd(port=12345, token="changeme")
 除 `port` 外全部是关键字参数。
 
 ```python
-Tmuxd(port=None, *, bind=None, token=None, socket=None, workspace=None,
+Tmuxd(port=7681, *, bind=None, token=None, socket=None, workspace=None,
       shell=None, history_limit=None, tmux_bin=None, ttyd_bin=None,
-      state_dir=None, gc_ttl=None, url_host=None, start_ttyd=True)
+      state_dir=None, gc_ttl=None, url_host=None)
 ```
 
 | 参数 | 默认 | 环境变量 | 说明 |
 | --- | --- | --- | --- |
-| `port` | `7681` | `TMUXD_PORT` | ttyd 端口,也是 `s.url` 里的端口。**`None` = 不起 ttyd** |
+| `port` | `7681` | `TMUXD_PORT` | ttyd 端口,也是 `s.url` 里的那个 |
 | `bind` | `127.0.0.1` | `TMUXD_BIND` | ttyd 绑哪。非回环地址**必须**同时给 `token`,否则 `ValueError` |
 | `token` | 无 | `TMUXD_TOKEN` | ttyd basic auth 的密码,用户名固定 `tmuxd` |
 | `socket` | `"tmuxd"` | `TMUXD_SOCKET` | 实例名 → tmux socket + 状态子目录。**`"default"` 会报错** |
@@ -32,23 +39,25 @@ Tmuxd(port=None, *, bind=None, token=None, socket=None, workspace=None,
 | `shell` | tmux 的默认 | `TMUXD_SHELL` | 不给 `cmd` 时跑什么(写进 `default-shell`) |
 | `history_limit` | `10000` | `TMUXD_HISTORY_LIMIT` | 人在网页里能往回滚多远 |
 | `tmux_bin` | PATH 里的 `tmux` | `TMUXD_TMUX_BIN` | |
-| `ttyd_bin` | PATH 里的 `ttyd` | `TMUXD_TTYD_BIN` | |
+| `ttyd_bin` | PATH → 包里自带的 | `TMUXD_TTYD_BIN` | 查找顺序见 [works/06 §3](../works/06-dependencies.md) |
 | `state_dir` | `~/.tmuxd` | `TMUXD_STATE_DIR` | 实际用的是 `<state_dir>/<socket>/` |
 | `gc_ttl` | `604800`(7 天) | `TMUXD_GC_TTL` | `exited` 记录保留多少秒 |
 | `url_host` | 由 `bind` 推导 | `TMUXD_URL_HOST` | `s.url` 里的主机名。机器在 NAT / 反代后面时给它 |
-| `start_ttyd` | `True` | — | `False` = 只管 tmux,不碰端口 |
 
 优先级:**构造参数 > 环境变量 > 默认值**。
 
 ### 构造时会做什么
 
 1. 解析实例名 → tmux socket(`tmuxd` 或 `tmuxd-<name>`)与状态目录;
-2. `shutil.which("tmux")` + `tmux -V`,**低于 3.0 直接抛 `TmuxMissing`**
-   —— 这两步都不启动任何 tmux 进程;
+2. 找到 tmux 并 `tmux -V`,**低于 3.0 抛 `TmuxMissing`** —— 这两步都不启动任何 tmux 进程;
 3. 渲染一份 `tmux.conf` 到状态目录(`history-limit` / `window-size latest` / `status off`);
-4. `start_ttyd` 为真且 `port` 不为 `None` 时,**确保端口上有一个 ttyd**(见下)。
+4. **确保端口上有一个 ttyd** —— 起一个,或接手一个已经在跑的(见下)。
 
-### ttyd 的复用规则
+任何一步失败都在**这里**抛,不拖到有人打开浏览器才炸。
+
+---
+
+## ttyd 的归属
 
 ttyd 不持有任何会话状态(它只 exec `attach.sh`),所以复用是安全的:
 
@@ -65,110 +74,30 @@ ttyd 不持有任何会话状态(它只 exec `attach.sh`),所以复用是安全�
 t.info()["ttyd"]["owned"]     # 这个 ttyd 是不是我起的
 ```
 
-### `start_ttyd=False`
-
-只管 tmux,完全不碰端口。`s.url` 照常能算出来(它只是个字符串)。
-
-CLI 的读命令走的就是这条 —— 否则 `tmuxd ls` 会顺手起一个 ttyd 然后立刻带走它。
-
-```python
-t = Tmuxd(port=12345, start_ttyd=False)
-print(t.session(id="x").url)      # 地址是对的,只是门可能没开
-```
+**绑生死用 `PR_SET_PDEATHSIG`**:你的进程一消失,内核直接给 ttyd 发 SIGTERM。
+写在 `finally` 里不行 —— SIGKILL 之下没有一行 Python 会执行。
 
 ---
 
-## 建会话与取会话
+## 专属会话池
 
-### `session(id=None, cwd=None, cmd=None, env=None) -> Session`
+会话池永远开在自己的 socket 上,**和你自己的 tmux 永不相交**:
 
-**有则接上,无则创建**(`tmux new-session -A` 的语义)。最常用的一个。
+| 实例 | tmux socket |
+| --- | --- |
+| `Tmuxd(...)` | `tmux -L tmuxd` |
+| `Tmuxd(socket="ci")` | `tmux -L tmuxd-ci` |
+| **你自己的 tmux** | `tmux`(default socket)—— 看不见,也不去看 |
 
-```python
-s = t.session(id="work", cwd="~/proj", cmd="npm run dev")
-s = t.session(id="work")            # 再来一次:接上原来那个
-s = t.session()                     # id 不给就生成:"0"、"1"、"2"…
-```
+`socket="default"` 直接 `ValueError`。理由是双向的:tmuxd 要能对自己那批会话全权负责,
+**更要紧的是它不该有能力动你那个跑了三天的工作会话**
+([works/01 §4](../works/01-library.md))。
 
-| 参数 | 默认 | 说明 |
-| --- | --- | --- |
-| `id` | 生成 | 不能含 `.` `:`,不能以 `-` 开头,不能为空,≤200 字符 |
-| `cwd` | `workspace` | `~` 会展开,相对路径按当前进程的 cwd 解析成绝对路径 |
-| `cmd` | `shell` | 一整条命令行字符串,交给 tmux 起 |
-| `env` | 无 | `{"K": "V"}`,落到 `tmux new-session -e` |
-
-**已存在的会话不会因为这次给的 `cwd` / `cmd` 不同而被重建 —— id 说了算。**
-要换命令就先 `kill` 再建,显式的。
-
-**命令不存在不会抛异常**:会话建起来后立刻退出,`status` 是 `exited`。
-这和你在自己终端里敲错命令是一回事。
-
-抛:`BadId`、`TmuxGone`。
-
-### `create(id=None, cwd=None, cmd=None, env=None) -> Session`
-
-同上,但 id 已存在时抛 `SessionExists` 而不是接上。
-
-用在"我确信这是个新东西"的地方 —— 撞了说明有 bug,该让它响。
-
-### `get(id) -> Session`
-
-**只接不建**,不存在抛 `NoSuchSession`。
-
-```python
-try:
-    t.get("work").send("继续", enter=True)
-except NoSuchSession:
-    ...
-```
-
-`session()` 和 `get()` 是两个动词而不是一个布尔参数,因为
-"我以为会接上结果开了个新的"是最难查的那类 bug。
-
-### `has(id) -> bool`
-
-存在返回 `True`。id 非法也返回 `False`(不抛)。
-
-```python
-if not t.has("work"):
-    t.session(id="work", cwd="~/proj")
-```
-
-### `sessions() -> list[Session]`
-
-全部会话,**每次都现场跑一次 `tmux ls`**,不读缓存。
-
-```python
-for s in t.sessions():
-    print(s.id, s.status, s.clients, s.current_command)
-```
-
-这个方法同时做三件事:
-
-- **对账**:记录里有、tmux 里没有的标 `exited`;tmux 里有、记录里没有的标 `external`;
-- **回收**:`exited` 且超过 `gc_ttl` 的记录删掉。**只删 JSON 文件,永远不 kill 活会话**;
-- 顺带刷新 `clients` / `current_command` 这些实时字段。
-
-> **对账只在这里发生 —— 没有后台线程,没有定时器。**
-> 一个被 `import` 进来的库不该背着调用方每 60 秒醒一次、写一次盘。
-> 常驻进程想更勤快就自己按需要调。
-
-**tmux server 还没起来时返回 `[]`,不是抛异常** —— 这一条是实现上最容易写错的地方:
-tmux 在 server 不存在时以 exit 1 报 `error connecting to ...`,库把它读成空列表。
-
-### `url_for(sid) -> str | None`
-
-不需要会话存在,纯算字符串。`port=None` 时返回 `None`。
-
-```python
-t.url_for("work")        # http://127.0.0.1:12345/?arg=work
-```
+**tmux server 是懒起的** —— 构造完那边一个进程都没有,第一个会话出现时才拉起来。
 
 ---
 
-## 观测
-
-### `info() -> dict`
+## `info() -> dict`
 
 ```python
 {
@@ -183,17 +112,12 @@ t.url_for("work")        # http://127.0.0.1:12345/?arg=work
 }
 ```
 
-`ttyd` 在 `port=None` 时是 `None`;`start_ttyd=False` 时照样会去探端口,
-所以 `listening` 始终可信。
-
 `sessions.external` **正常应该是 0**,不是 0 说明有人绕过库直接
-`tmux -L tmuxd new-session` 了。
+`tmux -L tmuxd new-session` 了([session.md](session.md#external))。
 
 ---
 
-## 生命周期
-
-### `serve_http(port, *, bind=None, token=None) -> HttpShell`
+## `serve_http(port, *, bind=None, token=None) -> HttpShell`
 
 把库暴露成 HTTP。**默认不开**,要暴露才调。
 
@@ -203,21 +127,19 @@ shell = t.serve_http(12346, token="api-token")
 shell.stop()
 ```
 
-在后台线程里跑,立刻返回。`bind` 不给就跟 `Tmuxd` 的 `bind` 一样。
-端点见 [works/03-http.md §4](../works/03-http.md)。
+在后台线程里跑,立刻返回。`bind` 不给就跟 `Tmuxd` 的一样。
+七个端点见 [works/03-http.md §4](../works/03-http.md)。
 
-### `close()`
+**两个端口,两拨用户**:`port` 是 ttyd,给**人**开浏览器;这个是 API,给**程序**。
+
+---
+
+## `close()`
 
 **收掉这个实例起的东西:HTTP 壳,以及归自己管的那个 ttyd。**
 
-```python
-t.close()
-```
-
 - **不碰任何会话**;
 - 接手来的 ttyd(`owned=False`)不会被停掉 —— 那不是你的孩子。
-
-### `__enter__` / `__exit__`
 
 ```python
 with Tmuxd(port=12345) as t:
@@ -225,9 +147,11 @@ with Tmuxd(port=12345) as t:
 # ttyd 没了,job-1 还在跑
 ```
 
-上下文管理器管的是**你起的那个门面**,不是屋里的人。
+上下文管理器管的是**你起的那个门面**,不是屋里的人。要销毁会话只有 `s.kill()`。
 
-### `kill_tmux_server()`
+---
+
+## `kill_tmux_server()`
 
 **销毁这个池里的全部会话。** 显式调用才会发生,库自己永远不调。
 
