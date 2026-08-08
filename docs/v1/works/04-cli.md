@@ -9,7 +9,7 @@ CLI 是**套在库外面的第三个壳**,但它和 SDK 那条链路有一处根
 ```bash
 pip install "tmuxd[server]"     # CLI 和 server 是一体的
 tmuxd start                     # 先有 server
-tmuxd new -t work               # CLI 才有东西可打
+tmuxd new -s work               # CLI 才有东西可打
 ```
 
 CLI 打的是**本机管控口**(默认 `127.0.0.1:7682`),和 ttyd 那个口分开(§5)。
@@ -88,18 +88,18 @@ tmuxd kill-server --tmux      # 真的要杀 tmuxd 的 tmux server(它的会话�
 ## 3. 会话
 
 ```bash
-tmuxd new  [-t ID] [-c DIR] [-e K=V]... [-- CMD...]
+tmuxd new  [-s ID] [-c DIR] [-e K=V]... [-- CMD...]
 tmuxd ls   [-F FORMAT]
-tmuxd url    -t ID [-o]          # 打印入口 URL;-o = 顺手用默认浏览器打开
-tmuxd kill   -t ID
-tmuxd has    -t ID
+tmuxd url    -s ID [-o]          # 打印入口 URL;-o = 顺手用默认浏览器打开
+tmuxd kill   -s ID
+tmuxd has    -s ID
 ```
 
-**每条命名会话的命令都是同一对参数:`-t` / `--id`。**
+**每条要指名会话的命令都是同一对参数:`-s` / `--id`。**
 为什么不是 tmux 的 `-s` / `-t` 两套,见 §3.1。
 
 ```console
-$ tmuxd new -t work -c ~/proj
+$ tmuxd new -s work -c ~/proj
 work  →  http://127.0.0.1:12345/?arg=work
 
 $ tmuxd new --id ci-42 -c ~/proj -- npm run dev
@@ -110,10 +110,10 @@ work     alive   2 clients  bash    ~/proj
 ci-42    alive   0 clients  node    ~/proj
 stale    exited  —          —       —          7 天后自动清
 
-$ tmuxd url -t work
+$ tmuxd url -s work
 http://127.0.0.1:12345/?arg=work
 
-$ tmuxd url -t work -o          # 打开浏览器
+$ tmuxd url -s work -o          # 打开浏览器
 ```
 
 - **`url` 取代了原先的 `attach`。** 名字换掉是因为它现在真的只是**打印一个地址** ——
@@ -121,8 +121,8 @@ $ tmuxd url -t work -o          # 打开浏览器
 - **没有 `share`。** 要给别人就把这个 URL 和 token 一起给 ——
   而那等于把这批会话全部交出去,理由见 [02 §4.3](02-session.md);
 - **detach 不需要命令** —— 关掉网页就是 detach,会话照跑;
-- `has` 只返回退出码,给脚本用:`tmuxd has -t work || tmuxd new -t work`;
-- `-t` 不给则生成一个 id(像 tmux 的 `0` / `1` / `2`);**要重入就自己给**
+- `has` 只返回退出码,给脚本用:`tmuxd has -s work || tmuxd new -s work`;
+- `-s` 不给则生成一个 id(像 tmux 的 `0` / `1` / `2`);**要重入就自己给**
   ([02 §2.1](02-session.md));
 - **`ls` 里没有 window / pane 计数** —— 一个会话就是一个终端([02 §1](02-session.md));
 - `-F` 用 tmux 同款占位符:`#{session_id}` `#{session_attached}`
@@ -156,25 +156,30 @@ $ tmuxd url -t work -o          # 打开浏览器
 
 **① `--target` 在替一个不存在的概念占名字。** tmux 的 target 是带语法的
 (`session:window.pane`),而 tmuxd **没有那套语法**([02 §2](02-session.md))。
-叫 `--target` 会让人以为可以写 `work:1`。**借字母可以,借错概念不行。**
+叫 `--target` 会让人以为可以写 `work:1`。**这就是不留 `-t` 的原因** ——
+那个字母在 tmux 里绑着一个这里不存在的概念。
 
 **② `new -s` 和其余 `-t` 的区分在这里没有意义。** 这个区分是 tmux 的:
 `new-session -s` 给新东西起名,别的命令 `-t` 指认已有的。
 但 tmuxd 的 `new` 是**有则接上、无则创建** —— 它完全可能正在指认一个已存在的会话。
 "起名"和"指认"在这一层是同一件事,**同一个值不该因为动词不同就换个参数名**。
+既然是同一件事,那就用同一个字母:`-s`,选哪个 session。
 
 定下来的写法:
 
 ```
--t, --id ID        每条命名会话的命令都用这一对
+-s, --id ID        每条要指名会话的命令都用这一对
 ```
 
-- **`-t` 这个字母留着** —— 顺手,而且它在 tmux 和 webmuxd 里都是这个位置。
-  **借的是字母,不是概念**;
-- **长名是 `--id`** —— 和库、和 HTTP、和 webmuxd、和 `#{session_id}` 全部对上。
-  **`--id` 是规范写法,`-t` 只是它的短形式**;
-- **`-s` / `--session` / `--target` 保留为别名**,不打印在 `--help` 里。
-  1.0.0 已经发到 PyPI,`tmuxd new -s work` 必须继续能跑。
+**两半回答的是不同的问题,所以两个都要:**
+
+- **`-s` 回答"哪一个"** —— 它就是"指定某个 session"的意思,一个字母,好敲。
+  不用 `-t` 是因为 tmux 的 `-t` 是 target,而 target 带着
+  `session:window.pane` 那套语法,这一层没有;
+- **`--id` 回答"按什么认"** —— 库收 `id=`,API 发 `{"id": …}`,webmuxd 的会话对象
+  也叫这个。**长名是能被翻译到别的层去的那个名字**;
+- **`-t` / `--session` / `--target` 保留为别名**,永远能用,但**任何地方都不出现**
+  —— 不在 `--help` 里,不在文档里。1.0.0 已经发到 PyPI,老脚本不能断。
 
 顺带一条纪律:**新增参数的长名以库/家族里的名字为准。** 短字母可以向 tmux 借,
 长名不行 —— 那会让"翻译成另一层"和"家族里叫法一致"这两件事一起烂掉。
@@ -182,28 +187,28 @@ $ tmuxd url -t work -o          # 打开浏览器
 ## 4. 往里敲
 
 ```bash
-tmuxd send -t ID "npm test" [--enter]       # 字面量
-tmuxd keys -t ID C-c q Enter                # tmux 键名
+tmuxd send -s ID "npm test" [--enter]       # 字面量
+tmuxd keys -s ID C-c q Enter                # tmux 键名
 ```
 
 **就这两条。** 没有 `capture`、没有 `run`、没有 `wait`、没有 `stream`、没有 `watch` ——
 tmuxd 不读终端内容,理由见 [03 §7](03-server.md)。
 
 ```console
-$ tmuxd send -t work "npm test" --enter
+$ tmuxd send -s work "npm test" --enter
 ✓ sent
 
-$ tmuxd keys -t work C-c
+$ tmuxd keys -s work C-c
 ✓ sent
 ```
 
 输出只有一行 `✓ sent`,而且它的意思**仅仅是"字符已经交给 tmux 了"** ——
-不是"命令跑完了",更不是"跑成功了"。想知道结果,打开 `tmuxd url -t work` 那个地址看一眼,
+不是"命令跑完了",更不是"跑成功了"。想知道结果,打开 `tmuxd url -s work` 那个地址看一眼,
 或者换 ssh。
 
 `send` 与 `keys` 分成两条命令,和库上的两个方法一一对应
 (`s.send()` / `s.send_key()`,[03 §10](03-server.md))——
-**`tmuxd send -t x "Enter the code"` 打进去的就是这七个词,不会变成一个回车。**
+**`tmuxd send -s x "Enter the code"` 打进去的就是这七个词,不会变成一个回车。**
 这是 tmux 的 `send-keys` 最容易咬人的地方,壳这一层直接消掉。
 
 ## 5. 实例,以及"远端"这件事
@@ -221,9 +226,9 @@ tmuxd -L ci new -t build     # 另一套实例:自己的端口、自己的状态
 ### 5.1 没有 `-H`:远端交给 ssh
 
 ```bash
-ssh box tmuxd new -t work -c ~/proj
-ssh box tmuxd send -t work "npm test" --enter
-ssh box tmuxd url -t work
+ssh box tmuxd new -s work -c ~/proj
+ssh box tmuxd send -s work "npm test" --enter
+ssh box tmuxd url -s work
 ```
 
 早先的稿子有个 `-H` 指向远端 tmuxd 的 HTTP 口,**去掉了**。`ssh` 覆盖它的全部用途,
@@ -262,7 +267,7 @@ tmux 是参考,所以这张表不是"违规清单",而是**给带着 tmux 肌肉
 
 | | tmux | tmuxd | 为什么 |
 | --- | --- | --- | --- |
-| 无 `-t` 又有多个会话 | 挑最近的 | **报错** | 往错的终端敲命令代价太大 |
+| 无 `-s` 又有多个会话 | 挑最近的 | **报错** | 往错的终端敲命令代价太大 |
 | `kill-server` | 杀 tmux server | **停 ttyd,会话全活** | 门面和屋子分开;要杀真的得 `--tmux` |
 | `attach` | 占住你的终端 | 改名 **`url`**,只打印地址 | 它本来就是给浏览器用的([02 §3](02-session.md)) |
 | `send-keys` | 一个命令,`-l` 区分 | 拆成 `send` / `keys` | 消掉"Enter 变回车"那个坑 |
@@ -271,8 +276,8 @@ tmux 是参考,所以这张表不是"违规清单",而是**给带着 tmux 肌肉
 | window / pane 命令 | 一大堆 | **一条都没有** | 一个会话就是一个终端([02 §1](02-session.md)) |
 | 前缀键 `C-b` | 有 | **无** | CLI 不劫持键盘;要前缀键就进网页用 tmux 本体 |
 | 会话名前缀匹配 | 支持 | **精确匹配**(`-t "=id"`) | `work` 匹配上 `workbench` 是真实事故 |
-| `-t` 是 target(带 `session:window.pane` 语法) | 是 | **`-t/--id`,只收一个 id** | 那套语法这一层没有;而且 `id` 是家族的概念,不是 tmux 的(§3.1) |
-| `new -s` / 其余 `-t` 两套 | 是 | **统一 `-t/--id`** | `new` 是有则接上,"起名"和"指认"在这里是同一件事(§3.1) |
+| `-t` 是 target(带 `session:window.pane` 语法) | 是 | **没有 `-t`** | 那个字母在 tmux 里绑着这里不存在的概念(§3.1) |
+| `new -s` / 其余 `-t` 两套 | 是 | **统一 `-s/--id`** | `new` 是有则接上,"起名"和"指认"在这里是同一件事(§3.1) |
 | `-L` | 换 tmux server | 换 **tmuxd 实例**(连带换它的 tmux socket) | 实例是一个概念,不是两个 |
 
 ## 8. 退出码
@@ -302,7 +307,7 @@ CLI 不做任何库没有的事,每条命令就是一次调用:
 | `serve` / `start` | 构造 `Tmuxd(...)` 并不让进程退出 |
 | `stop` | 结束那个进程(ttyd 跟着走,会话不动) |
 | `info` | `t.info()` |
-| `new -t ID` | `t.session(id, cwd, cmd, env)` |
+| `new -s ID` | `t.session(id, cwd, cmd, env)` |
 | `ls` | `t.sessions()` |
 | `url` | `s.url` |
 | `kill` | `s.kill()` |
@@ -316,7 +321,7 @@ CLI 不做任何库没有的事,每条命令就是一次调用:
 
 ## 10. 兼容
 
-`-s` / `--session` / `--target` 是 `-t` / `--id` 的别名,**不设移除期限**。
-它们不出现在 `--help` 里,但永远能用。
+`-t` / `--session` / `--target` 是 `-s` / `--id` 的别名,**不设移除期限**。
+它们不出现在 `--help` 里、也不出现在文档里,但永远能用。
 
 一个已经发出去的参数名,留着的成本是一行 argparse,删掉的成本是别人的脚本 —— 不对等。

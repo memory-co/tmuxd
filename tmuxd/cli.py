@@ -520,19 +520,22 @@ def _fail(message, code):
 
 
 def add_id(parser, *, required=True):
-    """``-t`` / ``--id``, plus three hidden legacy aliases.
+    """``-s`` / ``--id``, plus three hidden legacy aliases.
 
-    ``--id`` is the canonical spelling -- the library, the API and webmuxd's
-    session object all call it that (works/04-cli.md §3.1). ``-t`` is its short
-    form: the letter is borrowed from tmux, the concept is not.
+    The two halves answer different questions and both are needed. ``-s``
+    selects: *which session*. ``--id`` says what you select it by -- the
+    library takes ``id=``, the API sends ``{"id": ...}``, and webmuxd's
+    session object calls it that too, so the long name is the one that
+    survives being translated between layers (works/04-cli.md §3.1).
 
-    ``-s`` / ``--session`` / ``--target`` were 1.0.0's spelling and stay
-    forever, just out of --help. Requiredness is checked in main() because
-    argparse only enforces it on one action per dest.
+    ``-t`` / ``--session`` / ``--target`` are 1.0.0's spellings. They keep
+    working forever but appear nowhere -- not in --help, not in the docs.
+    Requiredness is checked in main() because argparse only enforces it on
+    one action per dest.
     """
-    parser.add_argument("-t", "--id", dest="id", metavar="ID",
+    parser.add_argument("-s", "--id", dest="id", metavar="ID",
                         help="session id" + ("" if required else " (generated when omitted)"))
-    parser.add_argument("-s", "--session", "--target", dest="id",
+    parser.add_argument("-t", "--session", "--target", dest="id",
                         help=argparse.SUPPRESS)
     parser.set_defaults(_needs_id=required)
     return parser
@@ -603,7 +606,7 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if getattr(args, "_needs_id", False) and not args.id:
-        return _fail("%s needs a session id: -t ID (or --id ID)" % args.command,
+        return _fail("%s needs a session: -s ID (or --id ID)" % args.command,
                      EXIT_USAGE)
     try:
         return args.func(args)

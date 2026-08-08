@@ -6,8 +6,8 @@ tmuxd 有两种用法,**它们对 server 的需求正好相反**:
 
 ```
 ① 嵌进你自己的进程                    ② 命令行
-   from tmuxd import Tmuxd                tmuxd new -t work
-   t = Tmuxd(port=12345)                  tmuxd send -t work "..."
+   from tmuxd import Tmuxd                tmuxd new -s work
+   t = Tmuxd(port=12345)                  tmuxd send -s work "..."
    t.session(id="work")                   tmuxd ls
         │                                      │
    你的进程持有实例                        每条命令都是一个新进程

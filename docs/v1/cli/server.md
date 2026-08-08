@@ -9,7 +9,7 @@
 ```bash
 pip install "tmuxd[server]"     # CLI 和 server 是一体的,装就一起装
 tmuxd start                     # 起来
-tmuxd new -t work -c ~/proj     # 现在 CLI 才有东西可打
+tmuxd new -s work -c ~/proj     # 现在 CLI 才有东西可打
 ```
 
 > **只用 Python SDK 的话不需要这些。** 你的进程本身就持有实例,

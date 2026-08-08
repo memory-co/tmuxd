@@ -101,19 +101,19 @@ def test_serve_prints_both_ports(run, capsys):
 
 
 def test_new_creates_and_prints_the_entrance(run, capsys):
-    assert run("new", "-t", "work") == 0
+    assert run("new", "-s", "work") == 0
     text = out(capsys)
     ttyd_port = run.argv[run.argv.index("--port") + 1]
     assert "work" in text and ("?arg=work" in text) and ttyd_port in text
 
 
 def test_id_has_one_canonical_name_and_three_aliases(run, capsys):
-    """--id 是规范写法(和库 / API / webmuxd 同名),-t 是短形式。
+    """`-s` 回答"哪一个",`--id` 回答"按什么认" —— 两半都要。
 
-    -s / --session / --target 是 1.0.0 的拼法,不设移除期限 —— 留着的成本是
+    -t / --session / --target 是 1.0.0 的拼法,不设移除期限 —— 留着的成本是
     一行 argparse,删掉的成本是别人的脚本(works/04-cli.md §3.1)。
     """
-    for flag in ("-t", "--id", "-s", "--session", "--target"):
+    for flag in ("-s", "--id", "-t", "--session", "--target"):
         assert run("new", flag, "same-%s" % flag.strip("-"), "--", "cat") == 0
     capsys.readouterr()
 
@@ -123,25 +123,26 @@ def test_id_has_one_canonical_name_and_three_aliases(run, capsys):
 
 
 def test_the_aliases_stay_out_of_help(bare):
-    """规范写法要显眼,旧拼法不该继续教给新人。"""
+    """规范写法要显眼,旧拼法不该继续教给新人 —— `-t` 尤其不该:
+    那个字母在 tmux 里绑着 target 那套语法,而这一层没有。"""
     from tmuxd.cli import build_parser
 
     sub = [a for a in build_parser()._actions if getattr(a, "choices", None)][0]
     for name in ("new", "send", "kill", "url", "has", "keys"):
         text = sub.choices[name].format_help()
-        assert "--id" in text, "%s 的 help 里没有 --id" % name
-        for stale in ("--session", "--target"):
+        assert "-s ID" in text and "--id" in text, "%s 的 help 里没有 -s/--id" % name
+        for stale in ("-t ", "--session", "--target"):
             assert stale not in text, "%s 的 help 里还印着 %s" % (name, stale)
 
 
 def test_a_missing_id_is_a_usage_error(bare, capsys):
     assert bare("send", "x") == cli.EXIT_USAGE
-    assert "needs a session id" in capsys.readouterr().err
+    assert "needs a session: -s ID" in capsys.readouterr().err
 
 
 def test_the_dash_dash_is_punctuation_not_the_command(run, capsys):
     """argparse.REMAINDER 会把 "--" 一起交回来。不剥掉就在跑命令 `-- cat`。"""
-    assert run("new", "-t", "c1", "--", "sh", "-c", "echo marker; sleep 30") == 0
+    assert run("new", "-s", "c1", "--", "sh", "-c", "echo marker; sleep 30") == 0
     capsys.readouterr()
 
     assert run("--json", "ls") == 0
@@ -153,7 +154,7 @@ def test_the_dash_dash_is_punctuation_not_the_command(run, capsys):
 def test_cwd_and_env_reach_the_session(run, capsys, tmp_path):
     target = tmp_path / "sub"
     target.mkdir()
-    assert run("new", "-t", "e1", "-c", str(target), "-e", "GREETING=hi",
+    assert run("new", "-s", "e1", "-c", str(target), "-e", "GREETING=hi",
                "--", "sh", "-c", "pwd; echo [$GREETING]; sleep 30") == 0
     capsys.readouterr()
 
@@ -163,36 +164,36 @@ def test_cwd_and_env_reach_the_session(run, capsys, tmp_path):
 
 
 def test_send_and_keys(run, capsys):
-    run("new", "-t", "s1", "--", "cat")
+    run("new", "-s", "s1", "--", "cat")
     capsys.readouterr()
 
-    assert run("send", "-t", "s1", "Enter the code") == 0
+    assert run("send", "-s", "s1", "Enter the code") == 0
     assert "sent" in out(capsys)
 
-    assert run("keys", "-t", "s1", "C-c") == 0
+    assert run("keys", "-s", "s1", "C-c") == 0
     capsys.readouterr()
-    assert wait_until(lambda: run("has", "-t", "s1") == cli.EXIT_NO_SESSION)
+    assert wait_until(lambda: run("has", "-s", "s1") == cli.EXIT_NO_SESSION)
 
 
 def test_url_prints_just_the_address(run, capsys):
-    run("new", "-t", "u")
+    run("new", "-s", "u")
     capsys.readouterr()
 
-    assert run("url", "-t", "u") == 0
+    assert run("url", "-s", "u") == 0
     ttyd_port = run.argv[run.argv.index("--port") + 1]
     assert out(capsys).strip() == "http://127.0.0.1:%s/?arg=u" % ttyd_port
 
 
 def test_kill(run, capsys):
-    run("new", "-t", "doomed", "--", "cat")
+    run("new", "-s", "doomed", "--", "cat")
     capsys.readouterr()
 
-    assert run("kill", "-t", "doomed") == 0
-    assert run("has", "-t", "doomed") == cli.EXIT_NO_SESSION
+    assert run("kill", "-s", "doomed") == 0
+    assert run("has", "-s", "doomed") == cli.EXIT_NO_SESSION
 
 
 def test_ls_and_its_format_string(run, capsys):
-    run("new", "-t", "f1", "--", "cat")
+    run("new", "-s", "f1", "--", "cat")
     capsys.readouterr()
 
     assert run("ls") == 0
@@ -214,21 +215,21 @@ def test_info_reports_both_ports(run, capsys):
 
 
 def test_has_uses_3_for_absent_which_is_an_answer(run):
-    run("new", "-t", "there", "--", "cat")
-    assert run("has", "-t", "there") == 0
-    assert run("has", "-t", "absent") == cli.EXIT_NO_SESSION
+    run("new", "-s", "there", "--", "cat")
+    assert run("has", "-s", "there") == 0
+    assert run("has", "-s", "absent") == cli.EXIT_NO_SESSION
 
 
 def test_missing_session_exits_3(run):
-    assert run("send", "-t", "nope", "x") == cli.EXIT_NO_SESSION
+    assert run("send", "-s", "nope", "x") == cli.EXIT_NO_SESSION
 
 
 def test_bad_id_exits_4(run):
-    assert run("new", "-t", "bad:id") == cli.EXIT_STATE
+    assert run("new", "-s", "bad:id") == cli.EXIT_STATE
 
 
 def test_errors_go_to_stderr_so_stdout_stays_pipeable(run, capsys):
-    run("send", "-t", "ghost", "x")
+    run("send", "-s", "ghost", "x")
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "✗" in captured.err
@@ -302,7 +303,7 @@ def test_stop_leaves_the_sessions_running(bare, capsys):
     assert bare("start") == 0
     capsys.readouterr()
     try:
-        assert bare("new", "-t", "held", "--", "cat") == 0
+        assert bare("new", "-s", "held", "--", "cat") == 0
         capsys.readouterr()
 
         assert bare("stop") == 0

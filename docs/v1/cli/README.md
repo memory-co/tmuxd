@@ -3,7 +3,7 @@
 命令行是**套在库外面的壳**。它**永远直接 `import tmuxd`**,和你自己写 Python 调的是
 同一份代码 —— 一次 HTTP 都不走。
 
-要驱动别的机器上的 tmuxd:`ssh box tmuxd send -t work "…"`。没有 `-H`
+要驱动别的机器上的 tmuxd:`ssh box tmuxd send -s work "…"`。没有 `-H`
 ([为什么](../works/04-cli.md))。
 
 设计依据见 [`../works/04-cli.md`](../works/04-cli.md),这里是命令本身。
@@ -22,13 +22,13 @@ pip install "tmuxd[server]"    # CLI 和 server 是一体的,装就一起装
 
 ```console
 $ tmuxd start                        # 先有 server:ttyd + 管控口都起来
-$ tmuxd new -t work -c ~/proj
+$ tmuxd new -s work -c ~/proj
 work  →  http://127.0.0.1:7681/?arg=work
 
-$ tmuxd send -t work "npm test" --enter
+$ tmuxd send -s work "npm test" --enter
 ✓ sent
 
-$ tmuxd url -t work -o               # 用浏览器打开,看它跑
+$ tmuxd url -s work -o               # 用浏览器打开,看它跑
 $ tmuxd ls
 work                 alive   1 client   node     /home/me/proj
 ```
@@ -54,28 +54,33 @@ work                 alive   1 client   node     /home/me/proj
 
 **每条命令就是一次库调用。** 没有任何命令能做库做不到的事。
 
-## 会话 id:`-t` / `--id`
+## 指定会话:`-s` / `--id`
 
 每条要指名会话的命令,收的都是**同一对参数**:
 
 ```bash
-tmuxd new  -t work -c ~/proj     # 短形式
-tmuxd new  --id work -c ~/proj   # 规范写法,和库 / HTTP / webmuxd 同名
+tmuxd new  -s work -c ~/proj     # -s = 指定哪个 session
+tmuxd new  --id work -c ~/proj   # --id = 按什么认它
 ```
 
-`--id` 是规范写法 —— 库里是 `t.session(id=…)`,HTTP 里是 `{"id": …}`,
-同家族的 webmuxd 也叫 `id`。`-t` 只是它的短形式。
+**两半回答的是不同的问题。** `-s` 回答"哪一个" —— 一个字母,好敲;
+`--id` 回答"按什么认" —— 库里是 `t.session(id=…)`,API 里是 `{"id": …}`,
+同家族的 webmuxd 也叫 `id`,所以它是**能被翻译到别的层去的那个名字**。
 
 **收的只是一个 id,没有语法。** 没有 `work:1`、没有 `work:1.2` ——
 tmux 那套 `session:window.pane` 目标语法在这里不存在([设计理由](../works/04-cli.md))。
 
+没有 `-t`:tmux 里那个字母是 target,而 target 带着 `session:window.pane` 那套语法,
+**这一层没有那套语法**,借了字母就会借来错的预期。
+
 | 旧写法(1.0.0) | 现在 |
 | --- | --- |
-| `new -s work` | `new -t work` / `new --id work` |
-| `send --target work` | `send -t work` / `send --id work` |
+| `new -s work` | 没变 —— `-s` 现在是**所有**命令的写法 |
+| `send -t work` | `send -s work` |
+| `send --target work` | `send --id work` |
 
-**`-s` / `--session` / `--target` 全部继续可用,不设移除期限**,只是不再出现在
-`--help` 里。已经写好的脚本不用改。
+**`-t` / `--session` / `--target` 全部继续可用,不设移除期限**,只是**任何地方都不再出现**
+—— 不在 `--help` 里,也不在文档里。已经写好的脚本不用改。
 
 ## 全局选项
 
@@ -112,7 +117,7 @@ tmuxd new -s build -L ci                 # ❌ 不认
 | 6 | tmux server 没了(`tmux_gone`) | **告警,别重试** |
 
 ```bash
-tmuxd has -t work || tmuxd new -t work        # 3 就是"没有",不是错误
+tmuxd has -s work || tmuxd new -s work        # 3 就是"没有",不是错误
 ```
 
 ## 配置文件

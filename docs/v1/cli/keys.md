@@ -9,11 +9,11 @@
 ## `tmuxd send` —— 打字面量
 
 ```
-tmuxd send -t ID TEXT [--enter]
+tmuxd send -s ID TEXT [--enter]
 ```
 
 ```console
-$ tmuxd send -t work "npm test" --enter
+$ tmuxd send -s work "npm test" --enter
 ✓ sent
 ```
 
@@ -24,14 +24,14 @@ $ tmuxd send -t work "npm test" --enter
 ## `tmuxd keys` —— 按键
 
 ```
-tmuxd keys -t ID KEY [KEY...]
+tmuxd keys -s ID KEY [KEY...]
 ```
 
 ```console
-$ tmuxd keys -t work C-c
+$ tmuxd keys -s work C-c
 ✓ sent
 
-$ tmuxd keys -t vim Escape : w q Enter
+$ tmuxd keys -s vim Escape : w q Enter
 ✓ sent
 ```
 
@@ -53,7 +53,7 @@ tmux send-keys -t work "Enter the code"      # tmux 原生
 tmuxd 把它挡在接口形状上,不给你混着写的机会:
 
 ```console
-$ tmuxd send -t work "Enter the code"
+$ tmuxd send -s work "Enter the code"
 ✓ sent                                 # 打进去的就是这七个词
 ```
 
@@ -71,7 +71,7 @@ $ tmuxd send -t work "Enter the code"
 想知道结果,两条路:
 
 ```bash
-tmuxd url -t work -o          # 让人看一眼
+tmuxd url -s work -o          # 让人看一眼
 ssh box 'cd ~/proj && npm test'   # 或者根本别用 tmuxd,用 ssh
 ```
 
