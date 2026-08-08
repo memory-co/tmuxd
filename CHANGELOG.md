@@ -29,8 +29,11 @@
 - **`tmuxd.server.router()`** —— 挂进你自己的 FastAPI 应用,鉴权/日志/CORS 全走你那套;
 - **可选依赖 `tmuxd[server]`** —— 基础安装仍然**零运行时依赖**,
   因为嵌库那条链路一行 Web 框架都用不上;
-- **自带 ttyd 二进制**(`x86_64` / `arm`)—— PATH 里有就优先用系统的,
-  没有才退到自带的([依赖设计](docs/v1/works/06-dependencies.md))。
+### 还没做
+
+- **自带 ttyd 二进制** —— 设计已经定了(PATH 优先、包里带 `x86_64` / `arm` 兜底,
+  见[依赖设计](docs/v1/works/06-dependencies.md)),**代码还没实现**。
+  这一版仍然要求你自己装 ttyd。
 
 ### 修的 bug
 
