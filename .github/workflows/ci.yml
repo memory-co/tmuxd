@@ -80,6 +80,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      # README.en.md is the PyPI description. PyPI does not know where the
+      # repository is, so a relative link there renders as a 404 -- and nothing
+      # in the repo would ever show it, since the same link works on GitHub.
+      - name: The PyPI-facing README links absolutely
+        run: |
+          bad=$(grep -oE '\]\([^)]+\)' README.en.md \
+                | sed -E 's/^\]\(//; s/\)$//' \
+                | grep -v '^https\?://' || true)
+          [ -z "$bad" ] || { echo "relative links break on PyPI:"; echo "$bad"; exit 1; }
+
       - name: Every relative link in the docs resolves
         run: |
           fail=0

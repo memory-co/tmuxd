@@ -2,12 +2,12 @@
 
 [![PyPI](https://img.shields.io/pypi/v/tmuxd)](https://pypi.org/project/tmuxd/)
 [![Python](https://img.shields.io/pypi/pyversions/tmuxd)](https://pypi.org/project/tmuxd/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/memory-co/tmuxd/blob/main/LICENSE)
 
 **tmux + ttyd as a Python library: terminals that outlive the connection, that a
 program can type into and a person can open in a browser.**
 
-[简体中文](README.md) · **English** · [Changelog](CHANGELOG.md)
+[简体中文](https://github.com/memory-co/tmuxd/blob/main/README.md) · **English** · [Changelog](https://github.com/memory-co/tmuxd/blob/main/CHANGELOG.md)
 
 ---
 
@@ -33,7 +33,7 @@ it run.**
 
 ## Quick start
 
-Needs `tmux` (≥ 3.0) and `ttyd` on the machine — see [Requirements](#requirements).
+Needs `tmux` (≥ 3.0) and `ttyd` on the machine — see [Requirements](https://github.com/memory-co/tmuxd/blob/main/README.en.md#requirements).
 
 ### As a library — no server needed
 
@@ -69,7 +69,7 @@ tmuxd stop                      # stops the server; sessions keep running
 
 A CLI command lives for milliseconds and can hold neither ttyd nor session
 state, so it asks a server that can. That is why the CLI and the server install
-together — [why](docs/v1/works/03-server.md).
+together — [why](https://github.com/memory-co/tmuxd/blob/main/docs/v1/works/03-server.md).
 
 ## What makes it different
 
@@ -134,7 +134,7 @@ packages, so re-shipping it would do badly what brew does well. macOS gets the
 
 **If your machine is not ready** — an architecture no wheel covers, no tmux, or
 you want a newer ttyd than the one we vendored — there is an optional
-[`tmuxd install`](docs/v1/cli/install.md). It fetches a checksum-verified ttyd
+[`tmuxd install`](https://github.com/memory-co/tmuxd/blob/main/docs/v1/cli/install.md). It fetches a checksum-verified ttyd
 from upstream (falling back to the bundled one when the network is down) and
 tells you the exact command for tmux on this machine, then records both paths in
 `~/.tmuxd.json` so the library and the CLI find them next time. **A ready machine
@@ -154,12 +154,12 @@ pytest tests/exact_targeting -v     # a single scenario
 Tests run against **real tmux, real ttyd and a real uvicorn** — this project's
 whole value lives at the seam with those programs, and mocking them would test
 nothing. Each test gets its own tmux socket, so running the suite never disturbs
-a tmux you have open. They are organised [by scenario](tests/README.md), not by
+a tmux you have open. They are organised [by scenario](https://github.com/memory-co/tmuxd/blob/main/tests/README.md), not by
 module.
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Apache-2.0 — see [LICENSE](https://github.com/memory-co/tmuxd/blob/main/LICENSE).
 
 tmuxd drives [ttyd](https://github.com/tsl0922/ttyd) (MIT) and
 [tmux](https://github.com/tmux/tmux) (ISC) as external programs; it neither
