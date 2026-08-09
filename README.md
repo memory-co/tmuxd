@@ -8,6 +8,10 @@
 
 **简体中文** · [English](README.en.md) · [更新日志](CHANGELOG.md)
 
+**tmuxd 是一个 `*muxd` 组件** —— 一扇 HTTP 上的窗给人,一个 Python 把手给程序。
+这一族的规范定在 [shellbase](https://github.com/memory-co/shellbase):
+[new-interface](https://github.com/memory-co/shellbase/blob/main/docs/v1/new-interface.md)(为什么是这个形状) · [muxd-spec](https://github.com/memory-co/shellbase/blob/main/docs/v1/muxd-spec.md)(算不算一个组件) · 姊妹项目 [webmuxd](https://github.com/memory-co/webmuxd)(浏览器那一块)
+
 ---
 
 `ttyd tmux new -A -s work` 这条命令大家都写过:tmux 让会话活着,ttyd 让你在浏览器里看见。
