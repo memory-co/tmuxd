@@ -53,7 +53,7 @@ with Tmuxd(port=12345, token="changeme") as t:
 
 ```bash
 pip install "tmuxd[server]"     # + fastapi + uvicorn
-tmuxd start                     # ttyd 在 :7681,管控口在 :7682
+tmuxd start                     # 两个口都随机挑,记进 ~/.tmuxd/daemon.json
 ```
 
 ```bash
@@ -94,10 +94,13 @@ tmuxd stop                      # 停的是 server,会话照跑
 | 要 server 吗 | **不要** | **要** |
 | 装什么 | `pip install tmuxd` | `pip install "tmuxd[server]"` |
 | 开几个口 | 只有 ttyd | ttyd + 管控口 |
-| 怎么暴露 | 把 `tmuxd.server.router()` 挂进你已经在跑的 app | 管控口 `:7682` |
+| 怎么暴露 | 把 `tmuxd.server.router()` 挂进你已经在跑的 app | 管控口(随机) |
 
-**两个口,两拨用户。** `:7681` 是 ttyd,**给人的** —— `s.url` 直接发给同事就行;
-`:7682` 是管控口,**给程序的** —— JSON 进 JSON 出,七个端点。
+**两个口,两拨用户。** 一个是 ttyd,**给人的** —— `s.url` 直接发给同事就行;
+另一个是管控口,**给程序的** —— JSON 进 JSON 出,七个端点。
+**两个都是启动时随便挑的空闲口** —— 7681 正是 ttyd 自己的默认端口,也就最可能被你
+自己那个 ttyd 占着,固定用它等于主动找架吵。端口记在 `~/.tmuxd/daemon.json` 里,
+`tmuxd` 的每条命令都从那儿读,你不用记。
 要驱动别的机器就 `ssh box tmuxd …`,而不是把口开到网上。
 
 ## 依赖

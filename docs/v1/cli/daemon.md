@@ -48,35 +48,55 @@ Restart=on-failure
 (`start_new_session`),再轮询等它就绪。
 
 ```console
-$ tmuxd start --port 12345
-tmuxd 1.0.0
-ttyd:  http://127.0.0.1:12345   token=8f2c1e9a…(已存 ~/.tmuxd/default/token)
-tmux:  /usr/bin/tmux 3.3a   socket=tmuxd (dedicated)   server not started yet
+$ tmuxd start
+tmuxd    running (pid 598198)
+  ttyd     http://127.0.0.1:54559
+  control  http://127.0.0.1:57389
 ```
+
+**两个端口都是启动时挑的空闲口**,写进 `~/.tmuxd/daemon.json`;
+后面每条命令都从那儿读,你不用记也不用传。
 
 起不来时**把日志尾巴摆到眼前**,而不是丢个 pid 让你自己找:
 
 ```console
 $ tmuxd start
-tmuxd did not come up. Tail of ~/.tmuxd/default/daemon.log:
+tmuxd did not come up. Tail of ~/.tmuxd/tmuxd/daemon.log:
   ...
 ```
 
 ```console
 $ tmuxd status
-daemon:    running (pid 598198)
-ttyd port: listening on 12345
+tmuxd    running (pid 598198)
+  ttyd     http://127.0.0.1:54559
+  control  http://127.0.0.1:57389
 ```
 
-`status` **不信文件**:pid 记录可能过期,所以它回头核实进程还在不在、端口应不应答。
+**一个东西,两个口 —— 不是三件事。** 判据只有一个:**管控口答不答**。
+它答了就是在跑,这是证明;`daemon.json` 里的 pid 只是一句声称,只用来打印和对账。
+(早先这里是 `server:` / `ttyd:` / `control:` 三行各说各话,能打印出
+"server: not running" 紧挨着 "control: listening" 这种自相矛盾的东西。)
+
+文件在、进程却不答的时候,说清是文件过期:
+
+```console
+$ tmuxd status
+tmuxd    not running
+  ttyd     http://127.0.0.1:54559   (not listening)
+  control  http://127.0.0.1:57389   (no answer)
+         ~/.tmuxd/daemon.json is stale -- `tmuxd start` replaces it
+```
+
 `--json` 给脚本用:
 
 ```console
 $ tmuxd --json status
-{"daemon": true, "pid": 598198, "port": 12345, "listening": true}
+{"running": true, "pid": 598198, "ttyd": true,
+ "ttyd_port": 54559, "control_port": 57389,
+ "daemon_file": "/home/me/.tmuxd/daemon.json"}
 ```
 
-退出码:两样都不在时返回 1。
+退出码:管控口不应答时返回 1。
 
 ```console
 $ tmuxd stop

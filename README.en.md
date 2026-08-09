@@ -56,7 +56,7 @@ Your process holds the instance, so there is nothing else to run.
 
 ```bash
 pip install "tmuxd[server]"     # + fastapi + uvicorn
-tmuxd start                     # ttyd on :7681, control API on :7682
+tmuxd start                     # both ports picked free, recorded in ~/.tmuxd/daemon.json
 ```
 
 ```bash
@@ -102,11 +102,14 @@ together — [why](https://github.com/memory-co/tmuxd/blob/main/docs/v1/works/03
 | Needs a server | **no** | **yes** |
 | Install | `pip install tmuxd` | `pip install "tmuxd[server]"` |
 | Ports | ttyd only | ttyd + control API |
-| Exposing it | mount `tmuxd.server.router()` in the app you already run | control API on `:7682` |
+| Exposing it | mount `tmuxd.server.router()` in the app you already run | control API (random port) |
 
-Two ports, two audiences. **`:7681` is ttyd and it is for people** — `s.url` goes
-straight to a colleague. **`:7682` is the control API and it is for programs** —
-JSON in, JSON out, seven endpoints. Driving another machine is `ssh box tmuxd …`,
+Two ports, two audiences. **One is ttyd and it is for people** — `s.url` goes
+straight to a colleague. **The other is the control API and it is for programs** —
+JSON in, JSON out, seven endpoints. **Both are free ports picked at startup**: 7681
+is ttyd's own default, which makes it the likeliest port for your own ttyd to be
+on, and claiming it would be picking a fight. They are recorded in
+`~/.tmuxd/daemon.json`, which every `tmuxd` command reads, so you never type them. Driving another machine is `ssh box tmuxd …`,
 not a port on the internet.
 
 ## Requirements

@@ -91,10 +91,60 @@ def test_and_it_names_the_control_port_not_the_ttyd_one(bare, capsys):
     assert control in err and ttyd not in err
 
 
-def test_serve_prints_both_ports(run, capsys):
+def test_status_shows_one_thing_with_two_ports(run, capsys):
+    """一个进程,两个口 —— 不是三件事。"""
     assert run("status") == 0
     text = out(capsys)
-    assert "ttyd:" in text and "control:" in text
+    assert "running" in text
+    assert run.argv[run.argv.index("--port") + 1] in text
+    assert run.argv[run.argv.index("--control-port") + 1] in text
+
+
+def test_status_never_contradicts_itself(run, capsys):
+    """管控口答了,就不许再说"没在跑"。
+
+    早先 `server:` 那行读的是 pid 文件(一句**声称**),而 `control:` 那行读的是
+    真的应答(一个**证明**),于是能打印出"server: not running / control:
+    listening"这种自相矛盾的东西。现在判据只有一个:它答不答。
+    """
+    assert run("status") == 0
+    text = out(capsys)
+    assert "not running" not in text, text
+
+
+def test_stop_leaves_no_daemon_file(run, tmp_path):
+    """SIGTERM 默认处置会直接杀掉进程,`finally` 一次都不会跑 ——
+    所以每次 stop 都会留下一个 daemon.json。信号必须变成异常。"""
+    assert (tmp_path / "daemon.json").exists()
+    assert run("stop") == 0
+    assert wait_until(lambda: not (tmp_path / "daemon.json").exists(), timeout=10), \
+        "stop 之后文件还在"
+
+
+def test_a_stale_file_does_not_block_start(bare, tmp_path, capsys):
+    """活着的 pid 不是证据 —— pid 会被复用,崩溃留下的文件不该挡住以后每一次启动。"""
+    import json as _json
+    import os as _os
+
+    (tmp_path / "daemon.json").write_text(_json.dumps(
+        {"pid": _os.getpid(), "socket": bare.socket, "bind": "127.0.0.1",
+         "ttyd_port": 1, "control_port": 2}))          # pid 活着,但那是 pytest 自己
+    assert bare("start") == 0
+    text = out(capsys)
+    assert "already running" not in text, text
+    bare("stop")
+
+
+def test_a_stale_daemon_file_is_called_stale(bare, capsys, tmp_path):
+    """进程被 SIGKILL 掉,文件留着 —— 说清是文件过期,而不是装作还在跑。"""
+    import json as _json
+
+    (tmp_path / "daemon.json").write_text(_json.dumps(
+        {"pid": 999999, "socket": bare.socket, "bind": "127.0.0.1",
+         "ttyd_port": 1, "control_port": 2}))
+    assert bare("status") == cli.EXIT_FAIL
+    text = out(capsys)
+    assert "not running" in text and "stale" in text
 
 
 # -- 参数真的递下去了 -------------------------------------------------------

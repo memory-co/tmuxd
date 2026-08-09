@@ -18,6 +18,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -36,8 +37,10 @@ EXIT_STATE = 4
 # published exit code should not change meaning under someone's script.
 EXIT_TMUX_GONE = 6
 
-DEFAULT_PORT = 7681
-DEFAULT_CONTROL_PORT = 7682
+# No default ports. The daemon picks free ones and writes them down; every
+# other command reads them back (works/03 §2). 7681 is ttyd's own default,
+# which makes it the likeliest port for a user's own ttyd to be sitting on.
+DAEMON_FILE = "daemon.json"
 CONFIG_PATH = os.environ.get("TMUXD_CONFIG") or os.path.expanduser("~/.tmuxd.conf")
 
 EXIT_FOR = {
@@ -76,24 +79,36 @@ def read_config(path=None):
 
 
 class Settings:
-    """Where an instance lives, resolved once per command."""
+    """Where the daemon is.
+
+    One daemon, one file: ``~/.tmuxd/daemon.json``, written at startup with
+    the ports it actually got. Flags and env override it; nothing guesses.
+    """
 
     def __init__(self, args):
         conf = read_config()
-        self.socket = args.socket or os.environ.get("TMUXD_SOCKET") \
-            or conf.get("socket") or "tmuxd"
-        self.port = int(args.port or os.environ.get("TMUXD_PORT")
-                        or conf.get("port") or DEFAULT_PORT)
-        self.control_port = int(
+        self.root = os.path.expanduser(
+            args.state_dir or os.environ.get("TMUXD_STATE_DIR")
+            or conf.get("state-dir") or "~/.tmuxd")
+        self.daemon_file = os.path.join(self.root, DAEMON_FILE)
+        self.record = _read_json(self.daemon_file) or {}
+
+        self.socket = (args.socket or os.environ.get("TMUXD_SOCKET")
+                       or conf.get("socket") or self.record.get("socket") or "tmuxd")
+        self.state_dir = os.path.join(self.root, self.socket)
+        self.bind = (args.bind or os.environ.get("TMUXD_BIND") or conf.get("bind")
+                     or self.record.get("bind") or "127.0.0.1")
+        self.port = _int(args.port or os.environ.get("TMUXD_PORT")
+                         or conf.get("port") or self.record.get("ttyd_port"))
+        self.control_port = _int(
             getattr(args, "control_port", None) or os.environ.get("TMUXD_CONTROL_PORT")
-            or conf.get("control-port") or DEFAULT_CONTROL_PORT)
-        self.bind = args.bind or os.environ.get("TMUXD_BIND") or conf.get("bind") \
-            or "127.0.0.1"
-        root = os.path.expanduser(args.state_dir or os.environ.get("TMUXD_STATE_DIR")
-                                  or conf.get("state-dir") or "~/.tmuxd")
-        self.state_dir = os.path.join(root, self.socket)
+            or conf.get("control-port") or self.record.get("control_port"))
         self.conf = conf
         self._token = args.token or os.environ.get("TMUXD_TOKEN") or conf.get("token")
+
+    @property
+    def pid(self):
+        return self.record.get("pid")
 
     @property
     def token(self):
@@ -106,17 +121,27 @@ class Settings:
             return None
 
     @property
-    def base_url(self):
-        host = "127.0.0.1" if self.bind in ("0.0.0.0", "::", "") else self.bind
-        return "http://%s:%d" % (host, self.control_port)
+    def host(self):
+        return "127.0.0.1" if self.bind in ("0.0.0.0", "::", "") else self.bind
 
     @property
-    def daemon_file(self):
-        return os.path.join(self.state_dir, "daemon.json")
+    def base_url(self):
+        if not self.control_port:
+            raise NoServer(
+                "tmuxd is not running (no %s). Start one with `tmuxd start`."
+                % self.daemon_file)
+        return "http://%s:%d" % (self.host, self.control_port)
 
     @property
     def tmux_socket(self):
         return self.socket if self.socket == "tmuxd" else "tmuxd-%s" % self.socket
+
+
+def _int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # -- talking to the server -------------------------------------------------
@@ -191,7 +216,7 @@ def _quote(sid):
 def cmd_serve(args):
     s = Settings(args)
     try:
-        from .core import Tmuxd
+        from .core import Tmuxd, free_port
         from .server import serve
     except ModuleNotFoundError as exc:
         return _fail(str(exc), EXIT_FAIL)
@@ -200,23 +225,38 @@ def cmd_serve(args):
         port=s.port, bind=s.bind, token=s.token, socket=s.socket,
         history_limit=s.conf.get("history-limit"),
         tmux_bin=s.conf.get("tmux-bin") or None,
-        state_dir=os.path.dirname(s.state_dir),
+        state_dir=s.root,
     )
+    # Both ports are decided here and written down. Nobody guesses them
+    # afterwards -- `tmuxd ls` reads this file, and so does `tmuxd status`.
+    control_port = s.control_port or free_port(s.bind)
     if t.token:
         _write(os.path.join(t.state_dir, "token"), t.token, mode=0o600)
+    os.makedirs(s.root, exist_ok=True)
     with open(s.daemon_file, "w", encoding="utf-8") as fh:
-        json.dump({"pid": os.getpid(), "port": t.port,
-                   "control_port": s.control_port, "started_at": time.time()}, fh)
+        json.dump({"pid": os.getpid(), "socket": s.socket, "bind": s.bind,
+                   "ttyd_port": t.port, "control_port": control_port,
+                   "started_at": time.time()}, fh, indent=2)
 
-    _banner(t, s.control_port)
+    # `tmuxd stop` sends SIGTERM, whose default disposition kills the process
+    # outright -- no finally, so the daemon file outlived every single stop and
+    # the next `status` had to call it stale. Turn the signal into an exception
+    # so the cleanup path is the *only* way out.
+    signal.signal(signal.SIGTERM, _raise_interrupt)
+
+    _banner(t, control_port)
     try:
-        serve(t, control_port=s.control_port, bind=s.bind, token=t.token)
+        serve(t, control_port=control_port, bind=s.bind, token=t.token)
     except KeyboardInterrupt:
         pass
     finally:
         t.close()
         _unlink(s.daemon_file)
     return EXIT_OK
+
+
+def _raise_interrupt(signum, frame):
+    raise KeyboardInterrupt
 
 
 def _banner(t, control_port):
@@ -234,14 +274,20 @@ def _banner(t, control_port):
 
 def cmd_start(args):
     s = Settings(args)
-    existing = _read_json(s.daemon_file)
-    if existing and _alive(existing.get("pid")):
-        print("already running (pid %d)" % existing["pid"])
-        return EXIT_OK
+    # A live pid is not proof: pids get recycled, and a file left by a crash
+    # would otherwise block every future start. Ask the control port instead.
+    if s.pid and _alive(s.pid) and s.control_port:
+        try:
+            Api(s, timeout=3).get("/api/health")
+            print("already running (pid %d)" % s.pid)
+            return EXIT_OK
+        except NoServer:
+            pass
 
     # Global flags come before the subcommand -- argparse will not take them
     # afterwards, and getting that wrong makes `start` fail in a way whose only
-    # trace is the daemon log.
+    # trace is the daemon log. Ports are passed only if you asked for them;
+    # otherwise the daemon picks its own and records them.
     argv = [sys.executable, "-m", "tmuxd"]
     for flag, value in (("-L", args.socket), ("--port", args.port),
                         ("--control-port", args.control_port), ("--bind", args.bind),
@@ -255,15 +301,18 @@ def cmd_start(args):
     log = open(log_path, "ab")
     subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
 
-    api = Api(s)
     deadline = time.time() + 15
     while time.time() < deadline:
-        try:
-            api.get("/api/health")
-        except NoServer:
-            time.sleep(0.1)
-            continue
-        return cmd_info(args)
+        # Re-read every round: the file does not exist yet, and the ports it
+        # will name are not knowable until it does.
+        fresh = Settings(args)
+        if fresh.control_port:
+            try:
+                Api(fresh, timeout=3).get("/api/health")
+                return cmd_status(args)
+            except NoServer:
+                pass
+        time.sleep(0.1)
 
     sys.stderr.write("tmuxd did not come up. Tail of %s:\n%s" % (log_path, _tail(log_path)))
     return EXIT_FAIL
@@ -271,8 +320,7 @@ def cmd_start(args):
 
 def cmd_stop(args):
     s = Settings(args)
-    record = _read_json(s.daemon_file)
-    if not record or not _alive(record.get("pid")):
+    if not s.pid or not _alive(s.pid):
         print("not running")
         return EXIT_OK
 
@@ -283,9 +331,9 @@ def cmd_stop(args):
     except (NoServer, KeyError):
         pass
 
-    os.kill(record["pid"], 15)
+    os.kill(s.pid, 15)
     for _ in range(80):
-        if not _alive(record["pid"]):
+        if not _alive(s.pid):
             break
         time.sleep(0.1)
     print("server 已停。%d 个会话仍在运行(tmuxd start 回来即可)。" % live)
@@ -293,33 +341,51 @@ def cmd_stop(args):
 
 
 def cmd_status(args):
-    s = Settings(args)
-    record = _read_json(s.daemon_file)
-    pid = record.get("pid") if record else None
-    running = bool(pid and _alive(pid))
+    """One subject, two ports.
 
-    control_up = ttyd_up = False
-    try:
-        Api(s, timeout=3).get("/api/health")
-        control_up = True
-    except NoServer:
-        pass
-    except Exception:
-        control_up = True
+    The control port answering **is** the daemon running -- that is a proof,
+    while a pid in a file is only a claim. So the claim never gets to be the
+    headline: it would let this command contradict itself, printing "not
+    running" directly above a control port that just replied.
+    """
+    s = Settings(args)
+
+    answering = False
+    if s.control_port:
+        try:
+            Api(s, timeout=3).get("/api/health")
+            answering = True
+        except NoServer:
+            pass
+        except Exception:
+            # Something spoke HTTP back at us. Whatever it disliked, it is up.
+            answering = True
+
     from .ttyd import port_open
 
-    ttyd_up = port_open(s.bind, s.port)
+    ttyd_up = bool(s.port) and port_open(s.bind, s.port)
 
     if args.json:
-        print(json.dumps({"server": running, "pid": pid, "ttyd_port": s.port,
-                          "control_port": s.control_port, "ttyd": ttyd_up,
-                          "control": control_up}, indent=2))
-    else:
-        print("server:   %s" % ("running (pid %d)" % pid if running else "not running"))
-        print("ttyd:     %s" % ("listening on %d" % s.port if ttyd_up else "not listening"))
-        print("control:  %s" % ("listening on %d" % s.control_port if control_up
-                                else "not listening"))
-    return EXIT_OK if running or control_up else EXIT_FAIL
+        print(json.dumps({"running": answering, "pid": s.pid, "ttyd": ttyd_up,
+                          "ttyd_port": s.port, "control_port": s.control_port,
+                          "daemon_file": s.daemon_file}, indent=2))
+        return EXIT_OK if answering else EXIT_FAIL
+
+    if not answering and not s.record:
+        print("tmuxd    not running")
+        print("         %s does not exist" % s.daemon_file)
+        return EXIT_FAIL
+
+    print("tmuxd    %s" % ("running (pid %s)" % (s.pid or "?") if answering
+                           else "not running"))
+    print("  ttyd     http://%s:%s%s" % (s.host, s.port or "?",
+                                         "" if ttyd_up else "   (not listening)"))
+    print("  control  http://%s:%s%s" % (s.host, s.control_port or "?",
+                                         "" if answering else "   (no answer)"))
+    if not answering:
+        # The file outlived the process: SIGKILL, or a reboot.
+        print("         %s is stale -- `tmuxd start` replaces it" % s.daemon_file)
+    return EXIT_OK if answering else EXIT_FAIL
 
 
 def cmd_info(args):
@@ -628,8 +694,9 @@ def build_parser():
     p = argparse.ArgumentParser(prog="tmuxd", description=__doc__.split("\n")[0])
     p.add_argument("--version", action="version", version="tmuxd %s" % __version__)
     p.add_argument("-L", "--socket", help="instance name (also picks the tmux socket)")
-    p.add_argument("--port", type=int, help="ttyd port (default 7681)")
-    p.add_argument("--control-port", type=int, help="control API port (default 7682)")
+    p.add_argument("--port", type=int, help="ttyd port (default: a free one)")
+    p.add_argument("--control-port", type=int,
+                   help="control API port (default: a free one)")
     p.add_argument("--token")
     p.add_argument("--bind")
     p.add_argument("--state-dir")

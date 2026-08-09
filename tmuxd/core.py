@@ -10,6 +10,7 @@ The CLI and the HTTP endpoint call exactly this. Nothing lives above it.
 
 import os
 import shutil
+import socket as _socket
 import time
 import warnings
 from urllib.parse import quote
@@ -22,7 +23,6 @@ from .errors import BadId, NoSuchSession, SessionExists
 from .session import Session
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-DEFAULT_PORT = 7681
 DEFAULT_SOCKET = "tmuxd"
 DEFAULT_HISTORY = 10000
 DEFAULT_GC_TTL = 7 * 24 * 3600
@@ -35,6 +35,19 @@ DEFAULT_GC_TTL = 7 * 24 * 3600
 # keys the caller computes; a slash buys nothing and costs correctness in the
 # path, in ?arg= and in file names.
 _FORBIDDEN = set("./:\n\r\t\0")
+
+
+def free_port(bind="127.0.0.1"):
+    """A port nobody is on, right now.
+
+    Racy in principle -- someone could take it between here and ttyd binding.
+    That race is loud (ttyd fails to start and says so) and vanishingly rare,
+    while the collision a fixed default guarantees is neither.
+    """
+    host = "127.0.0.1" if bind in ("0.0.0.0", "::", "") else bind
+    with _socket.socket() as probe:
+        probe.bind((host, 0))
+        return probe.getsockname()[1]
 
 
 def _env(name, default=None):
@@ -72,8 +85,13 @@ class Tmuxd:
         # that outlives its connection is tmux's half, and a person getting in
         # from a browser is ttyd's, and without the second one this is a tmux
         # wrapper rather than tmuxd (works/01-library.md §2).
-        self.port = int(port if port is not None else _env("TMUXD_PORT", DEFAULT_PORT))
         self.bind = bind or _env("TMUXD_BIND", "127.0.0.1")
+        # No fixed default port. 7681 is *ttyd's* default, so it is exactly the
+        # port a user's own ttyd is most likely already sitting on -- picking it
+        # is picking a fight. Asked for a port, we use it; not asked, we take a
+        # free one and write it down (works/01 §5).
+        self.port = int(port if port is not None
+                        else _env("TMUXD_PORT") or free_port(self.bind))
         self.token = token if token is not None else _env("TMUXD_TOKEN")
         self.url_host = url_host or _env("TMUXD_URL_HOST")
         self.workspace = os.path.abspath(

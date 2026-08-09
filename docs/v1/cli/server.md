@@ -20,16 +20,20 @@ tmuxd new -s work -c ~/proj     # 现在 CLI 才有东西可打
 ## 两个端口
 
 ```
-:7681   ttyd      ← 人。浏览器打开 ?arg=<id> 进终端
-:7682   管控口     ← 程序。CLI 打它
+ttyd 口     ← 人。浏览器打开 ?arg=<id> 进终端
+管控口       ← 程序。CLI 打它
 ```
 
 **两拨用户,所以不合并。** ttyd 那个地址是**唯一对人暴露的**,可以直接贴给同事;
 管控口是 JSON 进 JSON 出,给 CLI 和别的语言用。
 
+**两个都是启动时挑的随机空闲口。** 没有 7681/7682 这种固定默认值 —— 7681 恰恰是
+ttyd 自己的默认端口,也就最可能被你自己那个 ttyd 占着;固定用它等于主动找架吵。
+挑好之后写进 `~/.tmuxd/daemon.json`,**每条命令都从那儿读**,所以你不用记、也不用传。
+
 | | ttyd 口 | 管控口 |
 | --- | --- | --- |
-| 默认 | `7681` | `7682` |
+| 默认 | **随机空闲口** | **随机空闲口** |
 | 给谁 | 人的浏览器 | CLI / 程序 |
 | 绑哪 | `127.0.0.1`(要对外得配 token) | `127.0.0.1`,**本来就该是本机的** |
 | 鉴权 | ttyd 的 basic auth | `Authorization: Bearer` |
@@ -49,10 +53,10 @@ tmuxd [-L NAME] serve [--port N] [--control-port N] [--bind ADDR] [--token T]
 ```
 
 ```console
-$ tmuxd serve --port 7681 --control-port 7682 --token changeme
-tmuxd 1.0.0
-ttyd:     http://127.0.0.1:7681        token=changeme…
-control:  http://127.0.0.1:7682/api    (CLI 打这个)
+$ tmuxd serve --token changeme
+tmuxd 2.0.0
+ttyd:     http://127.0.0.1:54559        token=changeme…
+control:  http://127.0.0.1:57389/api    (CLI 打这个)
 tmux:     /usr/bin/tmux 3.3a   socket=tmuxd (dedicated)   server not started yet
 ```
 
@@ -78,15 +82,14 @@ Restart=on-failure
 
 ```console
 $ tmuxd start
-tmuxd 1.0.0
-ttyd:     http://127.0.0.1:7681        token=8f2c1e9a…(已存 ~/.tmuxd/default/token)
-control:  http://127.0.0.1:7682/api
-tmux:     /usr/bin/tmux 3.3a   socket=tmuxd (dedicated)   server not started yet
+tmuxd    running (pid 598198)
+  ttyd     http://127.0.0.1:54559
+  control  http://127.0.0.1:57389
 
 $ tmuxd status
-server:   running (pid 598198)
-ttyd:     listening on 7681
-control:  listening on 7682
+tmuxd    running (pid 598198)
+  ttyd     http://127.0.0.1:54559
+  control  http://127.0.0.1:57389
 
 $ tmuxd stop
 server 已停。3 个会话仍在运行(tmuxd start 回来即可)。
@@ -102,7 +105,7 @@ CLI 会**如实说**,而不是顺手起一个然后立刻带走:
 
 ```console
 $ tmuxd ls
-✗ 没有 server 在跑(127.0.0.1:7682 上没人听)。先 tmuxd start。
+✗ tmuxd is not running (no ~/.tmuxd/daemon.json). Start one with `tmuxd start`.
 ```
 
 一条只读命令不该留下副作用。这也是 `tmuxd = tmux + ttyd` 的直接后果:
@@ -159,7 +162,7 @@ tmuxd -L ci new -t build
 curl -H "Authorization: Bearer $TOKEN" \
      -d '{"id":"work","cwd":"/srv/app","cmd":"claude"}' \
      -H 'Content-Type: application/json' \
-     http://127.0.0.1:7682/api/sessions
+     http://127.0.0.1:$(python3 -c "import json;print(json.load(open('$HOME/.tmuxd/daemon.json'))['control_port'])")/api/sessions
 ```
 
 返回里的 `url` 指向 **ttyd 的端口** —— 那是你要发给人的地址。

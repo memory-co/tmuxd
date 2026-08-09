@@ -110,7 +110,7 @@ tmuxd 不自带 HTTP 客户端([works/03 §13](../works/03-server.md))。
 
 ```python
 Tmuxd(socket="default")            # ValueError: 那会把会话开进你自己的 tmux
-Tmuxd(port=7681, bind="0.0.0.0")   # ValueError: 对外监听必须给 token
+Tmuxd(bind="0.0.0.0")   # ValueError: 对外监听必须给 token
 ```
 
 第二条不给"我待会再加"的机会:那是把一台机器的 shell 放到网上。

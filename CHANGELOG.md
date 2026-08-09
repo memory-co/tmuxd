@@ -1,5 +1,43 @@
 # 更新日志
 
+## 2.1.0
+
+**端口不再固定,`status` 不再自相矛盾。**
+
+### 改了
+
+- **两个端口都改成启动时挑空闲口**,不再有 `7681` / `7682` 这种默认值。
+  `7681` 恰恰是 **ttyd 自己的默认端口** —— 换句话说,固定用它,撞的正是
+  "机器上已经装了 ttyd 并且在用"的那批人,而那正是这个项目的用户画像。
+  `--port` / `--control-port` 仍在,你要指定就按你的来;
+- **`~/.tmuxd/daemon.json`** —— 一个文件,顶层,记 pid、两个端口、bind、socket。
+  daemon 启动时写,退出时删,**其余每条命令都从这儿读端口**,谁都不用猜、不用记。
+  (以前它藏在 `~/.tmuxd/<socket>/daemon.json`,而端口靠默认值猜。)
+- **`Tmuxd(port=…)` 变成可选的**:不传就挑一个空闲口。
+  注意这**不是** 2.0.0 砍掉的那个 `port=None` —— 那时它的意思是"不起 ttyd",
+  现在的意思是"端口我来挑"。**ttyd 仍然是必需的,`tmuxd = tmux + ttyd` 没变**;
+- **`tmuxd status` 重写。** 以前打三行 `server:` / `ttyd:` / `control:`,
+  而 `server:` 读的是 pid 文件(一句**声称**)、`control:` 读的是真的应答(一个**证明**),
+  于是能打印出 `server: not running` 紧挨着 `control: listening` 这种自相矛盾的东西
+  —— 何况 control 本来就**由 server 提供**,它们根本是同一个进程。
+  现在只有一个判据:**管控口答不答**。输出是一个主体加两个口:
+
+  ```
+  tmuxd    running (pid 598198)
+    ttyd     http://127.0.0.1:54559
+    control  http://127.0.0.1:57389
+  ```
+
+  `--json` 跟着变:`{"server": …}` → `{"running": …}`,并带上 `daemon_file`。
+
+### 修的 bug
+
+- **`tmuxd stop` 每次都会留下一个 `daemon.json`。** `stop` 发 SIGTERM,
+  而 SIGTERM 的默认处置是直接杀掉进程 —— `finally` 一次都没跑过(退出码 143)。
+  现在 `serve` 把信号变成异常,清理路径成了唯一出口;
+- **过期的 `daemon.json` 会挡住 `tmuxd start`。** 以前只看"pid 还活着吗",
+  而 pid 会被复用。现在要求管控口真的应答,才算"已经在跑"。
+
 ## 2.0.0
 
 **这一版是有意破坏兼容的。** 1.0.0 发出去之后,设计上有几处被想清楚了,
@@ -24,8 +62,8 @@
 ### 新增
 
 - **`tmuxd serve` 与管控口。** CLI 是活几十毫秒的进程,持不住 ttyd 也持不住状态,
-  所以它**必须**有个 server 可打。两个端口分工明确:`7681` 是 ttyd(给**人**开浏览器),
-  `7682` 是管控口(给**程序**)。详见 [CLI · server](docs/v1/cli/server.md);
+  所以它**必须**有个 server 可打。两个端口分工明确:一个是 ttyd(给**人**开浏览器),
+  一个是管控口(给**程序**)。详见 [CLI · server](docs/v1/cli/server.md);
 - **`tmuxd.server.router()`** —— 挂进你自己的 FastAPI 应用,鉴权/日志/CORS 全走你那套;
 - **可选依赖 `tmuxd[server]`** —— 基础安装仍然**零运行时依赖**,
   因为嵌库那条链路一行 Web 框架都用不上;

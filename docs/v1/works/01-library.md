@@ -44,7 +44,7 @@ tmuxd ──┼── CLI               tmuxd new / send    ← 同一个库,套
 │     ├── ttyd(子进程)  :12345  ← 人从这个端口进终端           │  │
 │     │      -p 12345 -a -W -c tmuxd:changeme attach.sh        │  │
 │     │                                                        │  │
-│     └── (CLI 那条链路还会有个 server:管控口 :7682,见 03)   │  │
+│     └── (CLI 那条链路还会有个 server:管控口,随机,见 03)   │  │
 │                                                              │  │
 └──────────────────────────────────────────────────────────────┘  │
                                                                   │
@@ -61,7 +61,7 @@ tmuxd 只是把 id 填进去。
 | 监听 | 谁的 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `:12345`(你给的 `port`) | **ttyd** | 起 | 人进终端的唯一入口 |
-| `:7682` 管控口 | tmuxd 的 server | 只有 `tmuxd serve` 起 | **CLI 打这个**;嵌库那条链路不需要([03](03-server.md)) |
+| 管控口(随机) | tmuxd 的 server | 只有 `tmuxd serve` 起 | **CLI 打这个**;嵌库那条链路不需要([03](03-server.md)) |
 | tmux socket | tmux | 懒起 | **tmuxd 专属**,和你自己的 tmux 不是同一个(§4) |
 
 **没有“不起 ttyd”这个选项。** `tmuxd = tmux + ttyd`,缺一个都不成立 ——
@@ -133,7 +133,7 @@ ttyd 在这套里只干一件事:把连接 exec 到 `attach.sh`。**它不持有
 
 ```console
 $ tmuxd ls
-✗ 没有实例在跑(端口 7681 上没人听)。先 tmuxd start。
+✗ tmuxd is not running (no ~/.tmuxd/daemon.json). Start one with `tmuxd start`.
 ```
 
 这比“起一个 50 毫秒就死的 ttyd”诚实,也和 `tmuxd = tmux + ttyd` 一致:
@@ -273,7 +273,7 @@ ttyd -p 12345 -a -W -c tmuxd:<token> /opt/tmuxd/bin/attach.sh
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `port` | `7681` | ttyd 端口,也是 `s.url` 里的那个 |
+| `port` | **随机空闲口** | ttyd 端口,也是 `s.url` 里的那个 |
 | `bind` | `127.0.0.1` | ttyd 绑哪;`0.0.0.0` 时 `token` 必填 |
 | `token` | 无 | ttyd basic auth 的密码(用户名固定 `tmuxd`) |
 | `socket` | `tmuxd` | 实例名 → tmux socket + 状态目录(§4) |

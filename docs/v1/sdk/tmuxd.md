@@ -24,14 +24,14 @@ t = Tmuxd(port=12345, token="changeme")
 除 `port` 外全部是关键字参数。
 
 ```python
-Tmuxd(port=7681, *, bind=None, token=None, socket=None, workspace=None,
+Tmuxd(port=None, *, bind=None, token=None, socket=None, workspace=None,
       shell=None, history_limit=None, tmux_bin=None, ttyd_bin=None,
       state_dir=None, gc_ttl=None, url_host=None)
 ```
 
 | 参数 | 默认 | 环境变量 | 说明 |
 | --- | --- | --- | --- |
-| `port` | `7681` | `TMUXD_PORT` | ttyd 端口,也是 `s.url` 里的那个 |
+| `port` | **随机空闲口** | `TMUXD_PORT` | ttyd 端口,也是 `s.url` 里的那个。不传就挑一个没人用的 —— 固定用 7681 就是在跟你自己的 ttyd 抢 |
 | `bind` | `127.0.0.1` | `TMUXD_BIND` | ttyd 绑哪。非回环地址**必须**同时给 `token`,否则 `ValueError` |
 | `token` | 无 | `TMUXD_TOKEN` | ttyd basic auth 的密码,用户名固定 `tmuxd` |
 | `socket` | `"tmuxd"` | `TMUXD_SOCKET` | 实例名 → tmux socket + 状态子目录。**`"default"` 会报错** |

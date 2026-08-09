@@ -24,7 +24,7 @@ pip install "tmuxd[server]"    # CLI 和 server 是一体的,装就一起装
 ```console
 $ tmuxd start                        # 先有 server:ttyd + 管控口都起来
 $ tmuxd new -s work -c ~/proj
-work  →  http://127.0.0.1:7681/?arg=work
+work  →  http://127.0.0.1:54559/?arg=work        # 端口是启动时挑的
 
 $ tmuxd send -s work "npm test" --enter
 ✓ sent
@@ -97,8 +97,8 @@ tmuxd new -s build -L ci                 # ❌ 不认
 | 选项 | 说明 |
 | --- | --- |
 | `-L, --socket NAME` | 实例名。**同时决定它的 tmux socket**(`-L ci` → `tmux -L tmuxd-ci`) |
-| `--port N` | ttyd 端口(入口地址用它),默认 `7681` |
-| `--control-port N` | **管控口**,CLI 打这个,默认 `7682`([server.md](server.md)) |
+| `--port N` | ttyd 端口(入口地址用它)。**默认随机挑一个空闲的** |
+| `--control-port N` | **管控口**,CLI 打这个。**默认也是随机的**([server.md](server.md)) |
 | `--bind ADDR` | ttyd 绑哪。非回环地址**必须**配 `--token`,否则拒绝启动 |
 | `--token T` | ttyd 的 basic auth 密码(用户名固定 `tmuxd`) |
 | `--state-dir DIR` | 状态目录,默认 `~/.tmuxd` |

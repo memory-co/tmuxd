@@ -12,7 +12,7 @@ tmuxd start                     # 先有 server
 tmuxd new -s work               # CLI 才有东西可打
 ```
 
-CLI 打的是**本机管控口**(默认 `127.0.0.1:7682`),和 ttyd 那个口分开(§5)。
+CLI 打的是**本机管控口**(端口随机,从 `~/.tmuxd/daemon.json` 读),和 ttyd 那个口分开(§5)。
 要驱动别的机器,用 `ssh box tmuxd …`,理由见 §5.1。
 
 **tmux 是参考,不是对齐目标。** 借它的短字母是因为顺手,不是因为要兼容它 ——
