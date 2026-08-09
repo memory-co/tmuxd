@@ -9,9 +9,9 @@ on:
     inputs:
       target:
         description: Where to publish
-        default: testpypi
+        default: dry-run
         type: choice
-        options: [testpypi, pypi]
+        options: [dry-run, testpypi, pypi]
 
 jobs:
   build:
@@ -50,7 +50,7 @@ jobs:
             rm -rf /tmp/probe
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -63,10 +63,21 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      # v7/v8 are the matched pair: v7 added unzipped "direct uploads" and v8
+      # is the download side that understands them. We upload zipped (the
+      # default), which v8 still unzips by content type. v8 also turns a digest
+      # mismatch from a warning into an error -- for the one job that pushes to
+      # PyPI, that is the right default.
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
+
+      # A dry run stops here on purpose: it exercises the whole pipeline --
+      # build, checks, the artifact round-trip -- without publishing anything,
+      # which is the only way to test a release workflow before a release.
+      - name: What a real run would publish
+        run: ls -l dist/
 
       - name: Publish to TestPyPI
         if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
