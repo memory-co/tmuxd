@@ -44,6 +44,31 @@ ttyd 自己的默认端口,也就最可能被你自己那个 ttyd 占着;固定�
 
 ---
 
+## `~/.tmuxd/daemon.json`
+
+端口是随机的,所以必须有个地方写下来。就是这个文件 —— **daemon 起来时写,退出时删**:
+
+```json
+{
+  "pid": 598198,
+  "socket": "tmuxd",
+  "bind": "127.0.0.1",
+  "ttyd_port": 54559,
+  "control_port": 57389,
+  "started_at": 1786236105.67
+}
+```
+
+**一个 daemon 一个文件**(`--state-dir` 换个根目录就能换一份)。
+`tmuxd` 的每条命令都从这儿拿管控口,所以你既不用记端口,也不用给每条命令传。
+
+**但它不是判断"在不在跑"的依据。** 文件只是一句声称 —— 进程可能已经没了。
+`status` 拿里面的端口去**打一次 `/api/health`**,答了才算在跑;
+文件在而端口不答,就直接说这个文件过期了。同理 `start` 也不信"pid 还活着"
+(pid 会被复用),它要的是真的应答。
+
+---
+
 ## `tmuxd serve`
 
 前台阻塞,日志走 stdout。给 systemd 的 `ExecStart`、容器 ENTRYPOINT 用。
@@ -159,10 +184,12 @@ tmuxd -L ci new -t build
 管控口就是普通的 JSON HTTP,七个端点,`GET /api/info` 里有 OpenAPI 的位置:
 
 ```bash
+PORT=$(python3 -c "import json;print(json.load(open('$HOME/.tmuxd/daemon.json'))['control_port'])")
+
 curl -H "Authorization: Bearer $TOKEN" \
      -d '{"id":"work","cwd":"/srv/app","cmd":"claude"}' \
      -H 'Content-Type: application/json' \
-     http://127.0.0.1:$(python3 -c "import json;print(json.load(open('$HOME/.tmuxd/daemon.json'))['control_port'])")/api/sessions
+     http://127.0.0.1:$PORT/api/sessions
 ```
 
 返回里的 `url` 指向 **ttyd 的端口** —— 那是你要发给人的地址。
