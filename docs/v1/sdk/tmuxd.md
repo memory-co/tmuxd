@@ -149,15 +149,22 @@ from tmuxd import Tmuxd                          # 需要 pip install "tmuxd[asg
 
 t = Tmuxd(base_path="/tty")                      # ttyd 听在 socket 上,没有端口
 app = FastAPI()
-app.mount("/tty", t.asgi(authorize=gate))        # 放在前端静态资源的 mount 之前
+app.mount("/tty", t.asgi())                      # 放在前端静态资源的 mount 之前
 
 t.session(id="id5").url                          # "/tty/?arg=id5" —— 同源相对地址
 ```
 
-窗从你的端口、你的门进来:不用多开一个端口,也没有第二套认证。
+窗从你的端口进来:不用多开一个端口。
 转发只搬字节(HTTP 原样、WebSocket 两个方向对拷帧、`tty` 子协议透传),不解析 ttyd 的协议。
 
-**谁能过,全看 `authorize(scope)`**(同步、异步都行)。每个请求都问 —— 页面、`/token`、`/ws`、静态资源:
+**默认不鉴权:谁能连到你 app 的端口,谁就能进窗**(打开 `/tty/?arg=<任意 id>` 就拿到 shell)。
+宿主只听 `127.0.0.1` 自己用,或者前面已有一层统一认证(Cloudflare Access、oauth2-proxy、VPN)时,这样就够了。
+
+**要上公网,传 `authorize(scope)`**(同步、异步都行)。每个请求都问 —— 页面、`/token`、`/ws`、静态资源:
+
+```python
+app.mount("/tty", t.asgi(authorize=gate))
+```
 
 | 返回 | 结果 |
 | --- | --- |
@@ -165,10 +172,7 @@ t.session(id="id5").url                          # "/tty/?arg=id5" —— 同源
 | `True` | 放行 |
 | `[(name, value), …]` | 放行,并把这些头加到 HTTP 响应上(核过票种个 cookie) |
 
-**不传 `authorize` 就是全放行。** socket 的 0600 只挡本机别的用户;挂上之后,
-谁能连到你 app 的端口,谁就能打开 `/tty/?arg=<任意 id>` 拿到 shell。只在宿主只听 `127.0.0.1`、
-或者前面已有一层统一认证(Cloudflare Access、oauth2-proxy、VPN)时省掉它。
-你 app 里只拦 `/api` 的鉴权中间件罩不住这条路。
+你 app 里只拦 `/api` 的鉴权中间件罩不住这条路,所以门得单独给。
 
 iframe 和浏览器的 WebSocket 带不了 `Authorization` 头,所以典型的门是「票据换 cookie」:
 页面请求上核一张短期票、种 `Path=/tty` 的 HttpOnly cookie;`/ws` 凭 cookie 放行,

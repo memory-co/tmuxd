@@ -56,7 +56,7 @@ with Tmuxd(port=12345, token="changeme") as t:
 
 实例在你自己的进程里,没有别的东西要起。
 
-### 嵌进 Web 后端 —— 窗走你的端口、你的登录
+### 嵌进 Web 后端 —— 窗走你的端口
 
 ```bash
 pip install "tmuxd[asgi]"       # + websockets;你的 ASGI server 要带 WebSocket(如 uvicorn[standard])
@@ -68,12 +68,7 @@ from tmuxd import Tmuxd
 
 app = FastAPI()
 t = Tmuxd(base_path="/tty")          # 不给端口:ttyd 听在 ~/.tmuxd/tmuxd/ttyd.sock(0600)
-
-def gate(scope):
-    """每个进窗的请求都问一次:页面、/token、/ws。返回 True 放行,False 拒绝。"""
-    return my_login_allows(scope)    # 你自己的登录态,比如从 cookie 里认人
-
-app.mount("/tty", t.asgi(authorize=gate))   # 不传 authorize = 全放行,见下
+app.mount("/tty", t.asgi())          # 窗挂到你的路由上
 
 @app.post("/api/work")
 def start_work():
@@ -81,12 +76,22 @@ def start_work():
     return {"window": s.url}         # "/tty/?arg=job-1" —— 同源相对地址,前端直接塞进 iframe
 ```
 
-只有你的 app 一个端口。窗和你的 API 走同一扇门 —— 详见下一节。
+只有你的 app 一个端口,窗和你的 API 走同一个口。
 
-> ⚠️ **`authorize` 可以不传,但不传就是不鉴权。** socket 的 0600 只挡本机别的用户;
-> 挂上之后,谁能连到你 app 的端口,谁就能打开 `/tty/?arg=<任意 id>` 拿到 shell。
-> 只有宿主只听 `127.0.0.1` 自己用,或者前面已经有一层统一认证(Cloudflare Access、oauth2-proxy、VPN)时,才可以不传。
-> 你 app 里拦 `/api` 的鉴权中间件**管不到** `/tty` —— iframe 和 WebSocket 带不了 `Authorization` 头。
+**默认不鉴权:谁能连到你 app 的端口,谁就能进窗。** 宿主只听 `127.0.0.1` 自己用,
+或者前面已经有一层统一认证(Cloudflare Access、oauth2-proxy、VPN)时,这样就够了。
+**要上公网,加一个 `authorize`:**
+
+```python
+def gate(scope):
+    """每个进窗的请求都问一次:页面、/token、/ws。返回 True 放行,False 拒绝。"""
+    return my_login_allows(scope)    # 你自己的登录态,比如从 cookie 里认人
+
+app.mount("/tty", t.asgi(authorize=gate))
+```
+
+你 app 里拦 `/api` 的鉴权中间件**管不到** `/tty` —— iframe 和 WebSocket 带不了 `Authorization` 头,
+所以得在这里单独给一个门。怎么写见下一节。
 
 ### 用命令行 —— 需要一个 server
 
@@ -113,10 +118,10 @@ ttyd 那一页(人看的那扇窗)可以开在两种地方,**由构造参数决�
 
 |  | ttyd 自己一个端口(TCP) | 挂进你的 app(unix socket) |
 | --- | --- | --- |
-| 怎么写 | `Tmuxd(port=12345, token=…)` | `Tmuxd(base_path="/tty")` + `app.mount("/tty", t.asgi(authorize=gate))` |
+| 怎么写 | `Tmuxd(port=12345, token=…)` | `Tmuxd(base_path="/tty")` + `app.mount("/tty", t.asgi())` |
 | ttyd 听在 | `127.0.0.1:12345`(或你给的 `bind`) | `<state_dir>/<socket>/ttyd.sock`,权限 0600 |
 | `s.url` | `http://127.0.0.1:12345/?arg=id5` | `/tty/?arg=id5`(相对,同源) |
-| 谁能进 | 知道 token 的人(basic auth,全员一个) | 你的 `gate(scope)` 说了算 —— 按人、按窗 |
+| 谁能进 | 知道 token 的人(basic auth,全员一个) | 默认:能连到你 app 的人;传了 `authorize` 就是你的门说了算 —— 按人、按窗 |
 | 要开几个口 | 多一个,防火墙要放 | 不多开,就是你 app 那一个 |
 | 适合 | 脚本、单机、CLI(`tmuxd start` 永远是这种) | 已经有登录的 Web 后端 |
 
@@ -130,7 +135,7 @@ ttyd 那一页(人看的那扇窗)可以开在两种地方,**由构造参数决�
 多一套认证 —— 一个明文、全员共用的 token,跟你的登录毫无关系,拿到它的人绕过登录直接进 shell,
 你的登出、改密码也管不到它。挂进你的 app 之后,窗和 API 走同一个端口、同一扇门。
 
-**门怎么写。** `authorize(scope)` 拿到原始 ASGI scope(path、query、headers、cookie 都在),同步异步都行:
+**门怎么写。** 不传 `authorize` 就是全放行(见上)。传了的话,`authorize(scope)` 拿到原始 ASGI scope(path、query、headers、cookie 都在),同步异步都行:
 
 | 返回 | 结果 |
 | --- | --- |
@@ -138,12 +143,8 @@ ttyd 那一页(人看的那扇窗)可以开在两种地方,**由构造参数决�
 | `True` | 放行 |
 | `[(name, value), …]` | 放行,并把这些头加到响应上 —— 比如核过一张票后种 cookie |
 
-**不传 `authorize` 就是全放行。** socket 的 0600 只挡住本机别的用户直连 ttyd;
-挂上 `t.asgi()` 之后,**谁能连到你 app 的端口,谁就能打开 `/tty/?arg=<任意 id>` 拿到 shell**
-—— 比 TCP 模式的 basic auth 还松。所以只在两种情况下省掉它:
-宿主只听 `127.0.0.1`、自己一个人用;或者前面已经有一层统一认证(Cloudflare Access、
-oauth2-proxy、VPN)挡住了所有请求。宿主自己的 `/api` 鉴权中间件**罩不住**这里 ——
-iframe 和 WebSocket 带不了 `Authorization` 头。
+为什么公网上一定要有门:socket 的 0600 只挡住本机别的用户直连 ttyd;挂上 `t.asgi()` 之后,
+谁能连到你 app 的端口,谁就能打开 `/tty/?arg=<任意 id>` 拿到 shell —— 比 TCP 模式的 basic auth 还松。
 
 iframe 和浏览器的 WebSocket 带不了 `Authorization` 头,所以常见做法是**票据换 cookie**:
 给窗地址附一张短期一次性票,页面请求上核票、种一个 `Path=/tty` 的 HttpOnly cookie,

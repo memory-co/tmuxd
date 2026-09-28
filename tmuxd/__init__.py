@@ -6,7 +6,7 @@
     s = t.session(id="id5", cwd="~/proj", cmd="claude")
     s.send("run the tests", enter=True)
     print(s.url)                              # /tty/?arg=id5
-    app.mount("/tty", t.asgi(authorize=gate)) # tmuxd[asgi]: one port, your door
+    app.mount("/tty", t.asgi())               # tmuxd[asgi]: the window on your port
 
     Tmuxd(port=12345, token="changeme")       # or ttyd on its own port:
                                               # http://127.0.0.1:12345/?arg=id5

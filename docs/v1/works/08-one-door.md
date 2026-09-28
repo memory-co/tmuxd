@@ -4,7 +4,7 @@
 t = Tmuxd(base_path="/tty")                     # ttyd 听在 <state_dir>/ttyd.sock
 s = t.session(id="id5", cmd="claude")
 s.url                                           # "/tty/?arg=id5" —— 相对地址
-app.mount("/tty", t.asgi(authorize=gate))       # pip install "tmuxd[asgi]"
+app.mount("/tty", t.asgi())                     # pip install "tmuxd[asgi]";默认不鉴权(§3)
 ```
 
 ## 1. 为什么

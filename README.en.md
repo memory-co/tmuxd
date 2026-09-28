@@ -57,7 +57,7 @@ with Tmuxd(port=12345, token="changeme") as t:
 
 Your process holds the instance, so there is nothing else to run.
 
-### Inside a web backend — the window on your port, behind your login
+### Inside a web backend — the window on your port
 
 ```bash
 pip install "tmuxd[asgi]"       # + websockets; your ASGI server needs WebSocket support (e.g. uvicorn[standard])
@@ -69,12 +69,7 @@ from tmuxd import Tmuxd
 
 app = FastAPI()
 t = Tmuxd(base_path="/tty")          # no port: ttyd listens on ~/.tmuxd/tmuxd/ttyd.sock (0600)
-
-def gate(scope):
-    """Asked on every request into the window: the page, /token, /ws."""
-    return my_login_allows(scope)    # your own login state, e.g. from a cookie
-
-app.mount("/tty", t.asgi(authorize=gate))   # no authorize = everyone in, see below
+app.mount("/tty", t.asgi())          # the window, on your routes
 
 @app.post("/api/work")
 def start_work():
@@ -82,15 +77,24 @@ def start_work():
     return {"window": s.url}         # "/tty/?arg=job-1" -- same-origin, drop it in an iframe
 ```
 
-One port, your app's. The window and your API share one door — see the next section.
+One port, your app's: the window and your API share it.
 
-> ⚠️ **`authorize` is optional, and leaving it out means no auth at all.** The
-> socket's 0600 only keeps other local users off ttyd; once mounted, anyone who
-> can reach your app's port can open `/tty/?arg=<any id>` and have a shell. Skip
-> it only when the host listens on `127.0.0.1` for yourself, or something in
-> front (Cloudflare Access, oauth2-proxy, a VPN) already authenticates every
-> request. Your app's `/api` auth middleware does **not** cover `/tty` — an
-> iframe and a WebSocket cannot send an `Authorization` header.
+**No auth by default: anyone who can reach your app's port gets into the
+window.** That is enough when the host listens on `127.0.0.1` for yourself, or
+something in front (Cloudflare Access, oauth2-proxy, a VPN) already
+authenticates every request. **On a public port, add an `authorize`:**
+
+```python
+def gate(scope):
+    """Asked on every request into the window: the page, /token, /ws."""
+    return my_login_allows(scope)    # your own login state, e.g. from a cookie
+
+app.mount("/tty", t.asgi(authorize=gate))
+```
+
+Your app's `/api` auth middleware does **not** cover `/tty` — an iframe and a
+WebSocket cannot send an `Authorization` header — so it needs its own gate.
+The next section shows how to write one.
 
 ### From the command line — needs a server
 
@@ -118,10 +122,10 @@ places, **decided by the constructor**:
 
 |  | ttyd on its own port (TCP) | mounted in your app (unix socket) |
 | --- | --- | --- |
-| Written as | `Tmuxd(port=12345, token=…)` | `Tmuxd(base_path="/tty")` + `app.mount("/tty", t.asgi(authorize=gate))` |
+| Written as | `Tmuxd(port=12345, token=…)` | `Tmuxd(base_path="/tty")` + `app.mount("/tty", t.asgi())` |
 | ttyd listens on | `127.0.0.1:12345` (or your `bind`) | `<state_dir>/<socket>/ttyd.sock`, mode 0600 |
 | `s.url` | `http://127.0.0.1:12345/?arg=id5` | `/tty/?arg=id5` (relative, same-origin) |
-| Who gets in | whoever has the token (basic auth, one for everyone) | your `gate(scope)` decides — per person, per window |
+| Who gets in | whoever has the token (basic auth, one for everyone) | by default, anyone who reaches your app; with `authorize`, your gate decides — per person, per window |
 | Ports to open | one more, firewall included | none beyond your app's |
 | Fits | scripts, one machine, the CLI (`tmuxd start` is always this) | a web backend that already has a login |
 
@@ -138,7 +142,7 @@ token shared by everyone, unrelated to your login, so holding it skips the login
 entirely and neither logging out nor changing a password touches it. Mounted in
 your app, the window and the API share one port and one door.
 
-**Writing the gate.** `authorize(scope)` gets the raw ASGI scope (path, query,
+**Writing the gate.** No `authorize` lets everyone in (see above). Given one, `authorize(scope)` gets the raw ASGI scope (path, query,
 headers, cookies) and may be sync or async:
 
 | Returns | Result |
@@ -147,14 +151,9 @@ headers, cookies) and may be sync or async:
 | `True` | allowed |
 | `[(name, value), …]` | allowed, with these headers added to the response — a cookie set after checking a ticket, say |
 
-**No `authorize` means everyone gets in.** The socket's 0600 only keeps other
-users on the machine from reaching ttyd directly; once `t.asgi()` is mounted,
-**anyone who can reach your app's port can open `/tty/?arg=<any id>` and have a
-shell** — looser than TCP mode's basic auth. Leave it out only when the host
-listens on `127.0.0.1` for yourself alone, or when something in front
-(Cloudflare Access, oauth2-proxy, a VPN) already authenticates every request.
-Your app's own `/api` auth middleware does **not** cover this route: an iframe
-and a WebSocket cannot send an `Authorization` header.
+Why a public port needs a gate: the socket's 0600 only keeps other local users
+off ttyd; once `t.asgi()` is mounted, anyone who can reach your app's port can
+open `/tty/?arg=<any id>` and have a shell — looser than TCP mode's basic auth.
 
 An iframe and a browser WebSocket cannot send an `Authorization` header, so the
 usual shape is **ticket for cookie**: attach a short-lived one-time ticket to the

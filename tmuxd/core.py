@@ -4,7 +4,7 @@
     s = t.session(id="id5", cwd="~/proj", cmd="claude")
     s.send("run the tests", enter=True)
     print(s.url)                              # /tty/?arg=id5
-    app.mount("/tty", t.asgi(authorize=gate)) # the window, behind your door
+    app.mount("/tty", t.asgi())               # the window, on your port
 
     Tmuxd(port=12345, token="changeme")       # or: ttyd on a port of its own
 
@@ -369,7 +369,8 @@ class Tmuxd:
     def asgi(self, authorize=None):
         """The window as an ASGI app, for a host to mount at ``base_path``.
 
-            app.mount("/tty", t.asgi(authorize=gate))
+            app.mount("/tty", t.asgi())                   # everyone who reaches you
+            app.mount("/tty", t.asgi(authorize=gate))     # whoever gate(scope) lets in
 
         Bytes are relayed to ttyd untouched; who may pass is entirely
         ``authorize(scope)``'s call -- and without one, everyone who reaches
