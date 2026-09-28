@@ -58,6 +58,10 @@ tmuxd ──┼── CLI               tmuxd new / send    ← 同一个库,套
 自己发明的路径、没有 302 跳转 —— `?arg=<id>` 是 ttyd 原生就有的东西(`-a` 打开),
 tmuxd 只是把 id 填进去。
 
+(上图是 TCP 模式。嵌进 Web 后端时 ttyd 默认听在状态目录里的 unix socket 上,
+URL 是相对的 `/tty/?arg=id5`,由宿主把 `t.asgi()` 挂到自己的路由上 —— 见 [08](08-one-door.md)。
+核心仍然只报 URL,转发那一跳是宿主的。)
+
 | 监听 | 谁的 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `:12345`(你给的 `port`) | **ttyd** | 起 | 人进终端的唯一入口 |
@@ -109,16 +113,17 @@ with Tmuxd(port=12345) as t:      # 退出时收掉 ttyd
 ### 3.1 ttyd 是无状态的,所以可以复用
 
 ttyd 在这套里只干一件事:把连接 exec 到 `attach.sh`。**它不持有任何会话状态**,
-状态全在 tmux 那边。所以同一个端口上已经有一个 tmuxd 起的 ttyd 时,
-`Tmuxd(port=12345)` **直接接手用**,不重复起、也不报错:
+状态全在 tmux 那边。所以同一个地址(端口,或 unix socket)上已经有一个 tmuxd 起的 ttyd 时,
+`Tmuxd(...)` **直接接手用**,不重复起、也不报错:
 
-| 那个端口上是什么 | 行为 |
+| 那个地址上是什么 | 行为 |
 | --- | --- |
 | 空的 | 起一个 ttyd,归我管(我退它退) |
 | 已有一个 tmuxd 起的 ttyd(同 socket) | **接手用**,不重起;我退了它**不退**(不是我的孩子) |
 | 别人的东西 | `PortInUse`,不猜、不抢 |
 
-判据是状态目录里按"端口 + socket"记的一份 pidfile。这条让"Web 后端每次重启都
+判据是状态目录里按"地址 + socket + `base_path`"记的一份 pidfile
+(`ttyd-<port>.json` 或 `ttyd-unix.json`)。这条让"Web 后端每次重启都
 `Tmuxd(port=…)` 一下"变成安全操作 —— 否则每次重启都要么撞端口、要么把用户正连着的
 网页踢掉。
 
@@ -219,6 +224,8 @@ attach 回去现场和挂之前一模一样。
 ```
 ~/.tmuxd/<socket>/               # state_dir 可覆盖
 ├── ttyd-<port>.json             # ttyd 的 pid / 端口 / 起它的进程(§3.1 复用判据)
+├── ttyd-unix.json               # 同上,socket 模式(08)
+├── ttyd.sock                    # socket 模式下 ttyd 听在这,0600
 └── sessions/<id>.json           # {id, cwd, cmd, created_at, last_attached}
 ```
 
@@ -265,6 +272,10 @@ ttyd -p 12345 -a -W -c tmuxd:<token> /opt/tmuxd/bin/attach.sh
 所以默认 `Tmuxd(...)` 里 ttyd 只绑 `127.0.0.1`;要 `bind="0.0.0.0"` 而没给 token,
 **直接报错**,不给"我待会再加"的机会:那是把一台机器的 shell 放到网上。
 
+**以上是 TCP 模式。** socket 模式([08](08-one-door.md))下没有 `-c`:门是 socket 的文件权限,
+谁能过由宿主挂 `t.asgi(authorize=…)` 时的钩子决定 —— 这正是上面说的"在有身份的那一层做",
+而且按会话限死 `?arg=` 也就是钩子里的一行。
+
 **公网必须在外层套 TLS**(云 LB / caddy / 反代)。ttyd 自己有 `-S`,但证书管理不是这个库的事。
 
 ## 8. 构造参数
@@ -273,8 +284,10 @@ ttyd -p 12345 -a -W -c tmuxd:<token> /opt/tmuxd/bin/attach.sh
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `port` | **随机空闲口** | ttyd 端口,也是 `s.url` 里的那个 |
-| `bind` | `127.0.0.1` | ttyd 绑哪;`0.0.0.0` 时 `token` 必填 |
+| `port` | 无 | 给了就是 TCP 模式,ttyd 端口,也是 `s.url` 里的那个 |
+| `listen` | 给了 `port` 是 `"tcp"`,否则 `"unix"` | ttyd 听在端口上,还是状态目录里的 socket 上([08](08-one-door.md)) |
+| `base_path` | 无 | ttyd 的 `-b`;`s.url` 带上这个前缀。挂 `t.asgi()` 的前缀要和它一致 |
+| `bind` | `127.0.0.1` | TCP 模式下 ttyd 绑哪;`0.0.0.0` 时 `token` 必填 |
 | `token` | 无 | ttyd basic auth 的密码(用户名固定 `tmuxd`) |
 | `socket` | `tmuxd` | 实例名 → tmux socket + 状态目录(§4) |
 | `workspace` | 当前 cwd | 新会话的默认 `cwd` |

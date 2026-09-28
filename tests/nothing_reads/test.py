@@ -46,13 +46,15 @@ def test_the_library_starts_no_http_server_of_its_own():
 
 
 def test_import_tmuxd_does_not_drag_in_fastapi():
-    """基础安装零依赖,靠的就是这条 —— FastAPI 只在 [server] 那条链路上。"""
+    """基础安装零依赖,靠的就是这条 —— FastAPI 只在 [server] 那条链路上,
+    websockets 只在 [asgi] 那条上(`t.asgi()` 被调用时才 import)。"""
     import subprocess
     import sys
 
     out = subprocess.run(
         [sys.executable, "-c",
-         "import sys, tmuxd; print('fastapi' in sys.modules or 'uvicorn' in sys.modules)"],
+         "import sys, tmuxd; t = tmuxd.Tmuxd; print(any(m in sys.modules for m in "
+         "('fastapi', 'uvicorn', 'websockets', 'starlette')))"],
         capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False"
 

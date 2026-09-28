@@ -1,5 +1,32 @@
 # 更新日志
 
+## 未发布
+
+**窗可以挂到宿主的路由上:ttyd 走 unix socket,`t.asgi()` 交出一个 ASGI app。**
+设计见 [works/08](docs/v1/works/08-one-door.md)。
+
+### 新增
+
+- **`Tmuxd(listen="unix" | "tcp" | ("tcp", port), base_path=None)`。** socket 模式下 ttyd
+  听在 `<state_dir>/<socket>/ttyd.sock`(tmuxd 自己 chmod 成 0600 —— lws 无视 umask 建成 0660),
+  `s.url` 是相对的 `<base_path>/?arg=<id>`;`base_path` 就是 ttyd 的 `-b`,两种模式都能用。
+  环境变量 `TMUXD_LISTEN` / `TMUXD_BASE_PATH`;
+- **`t.asgi(authorize=None)`**(extra `tmuxd[asgi]`,依赖 `websockets>=13`):
+  把窗交成 ASGI app,HTTP 原样转发、WebSocket 两个方向对拷帧,不解析 ttyd 的协议。
+  `authorize(scope)` 同步异步都行,返回假拒(HTTP 403 / WebSocket 1008),
+  返回 `[(name, value), …]` 放行并加响应头(核票种 cookie 用);
+- `info()["ttyd"]` 多了 `listen` / `socket_path` / `base_path`;
+- socket 路径超过 `sun_path` 上限时构造直接 `ValueError`,不让 ttyd 静默截断;
+  被 SIGKILL 的 ttyd 留下的 socket 文件,认领失败且没人在听时自动清掉。
+
+### 改了(不兼容)
+
+- **什么端口都不给时,`Tmuxd()` 现在走 socket,不再挑一个空闲 TCP 口。**
+  `Tmuxd(port=…)`、`TMUXD_PORT`、`listen="tcp"` 都还是 TCP,意思不变;
+  `tmuxd start`(CLI)永远是 TCP —— 那边没有宿主可以挂窗。
+- socket 模式下给 `port` / `bind` 是 `ValueError`;「非回环 bind 必须带 token」只在 TCP 模式检查。
+- ttyd 的复用判据加了 `base_path`:前缀不同的 ttyd 不接手,报 `PortInUse`。
+
 ## 2.1.0
 
 **端口不再固定,`status` 不再自相矛盾。**

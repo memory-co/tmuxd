@@ -2,10 +2,14 @@
 
     from tmuxd import Tmuxd
 
-    t = Tmuxd(port=12345, token="changeme")   # ttyd is up; tmux is not yet
+    t = Tmuxd(base_path="/tty")               # ttyd is up; tmux is not yet
     s = t.session(id="id5", cwd="~/proj", cmd="claude")
     s.send("run the tests", enter=True)
-    print(s.url)                              # http://localhost:12345/?arg=id5
+    print(s.url)                              # /tty/?arg=id5
+    app.mount("/tty", t.asgi(authorize=gate)) # tmuxd[asgi]: one port, your door
+
+    Tmuxd(port=12345, token="changeme")       # or ttyd on its own port:
+                                              # http://127.0.0.1:12345/?arg=id5
 
 The library is the core. Embedding it needs no server at all; the CLI does,
 and that is ``tmuxd serve`` plus the ``[server]`` extra (works/03-server.md).

@@ -24,16 +24,18 @@ t = Tmuxd(port=12345, token="changeme")
 除 `port` 外全部是关键字参数。
 
 ```python
-Tmuxd(port=None, *, bind=None, token=None, socket=None, workspace=None,
+Tmuxd(port=None, *, listen=None, base_path=None, bind=None, token=None, socket=None, workspace=None,
       shell=None, history_limit=None, tmux_bin=None, ttyd_bin=None,
       state_dir=None, gc_ttl=None, url_host=None)
 ```
 
 | 参数 | 默认 | 环境变量 | 说明 |
 | --- | --- | --- | --- |
-| `port` | **随机空闲口** | `TMUXD_PORT` | ttyd 端口,也是 `s.url` 里的那个。不传就挑一个没人用的 —— 固定用 7681 就是在跟你自己的 ttyd 抢 |
-| `bind` | `127.0.0.1` | `TMUXD_BIND` | ttyd 绑哪。非回环地址**必须**同时给 `token`,否则 `ValueError` |
-| `token` | 无 | `TMUXD_TOKEN` | ttyd basic auth 的密码,用户名固定 `tmuxd` |
+| `port` | TCP 模式下**随机空闲口** | `TMUXD_PORT` | **给了就是 TCP 模式。** ttyd 端口,也是 `s.url` 里的那个。`listen="tcp"` 不给端口就挑一个没人用的 —— 固定用 7681 就是在跟你自己的 ttyd 抢 |
+| `listen` | 给了 `port` 是 `"tcp"`,否则 **`"unix"`** | `TMUXD_LISTEN` | `"unix"`:ttyd 听在 `<state_dir>/<socket>/ttyd.sock`(0600),窗靠宿主挂 `asgi()` 进来(见下文「窗也挂进来」);`"tcp"`:ttyd 自己占一个端口。`("tcp", 12345)` 等于 `port=12345`。socket 模式下给 `port` / `bind` 是 `ValueError` |
+| `base_path` | 无 | `TMUXD_BASE_PATH` | ttyd 的 `-b`:页面、`/token`、`/ws` 都带这个前缀,`s.url` 也带。挂 `asgi()` 的前缀要和它一致 |
+| `bind` | `127.0.0.1` | `TMUXD_BIND` | TCP 模式下 ttyd 绑哪。非回环地址**必须**同时给 `token`,否则 `ValueError` |
+| `token` | 无 | `TMUXD_TOKEN` | TCP 模式下 ttyd basic auth 的密码,用户名固定 `tmuxd`。socket 模式下不传给 ttyd |
 | `socket` | `"tmuxd"` | `TMUXD_SOCKET` | 实例名 → tmux socket + 状态子目录。**`"default"` 会报错** |
 | `workspace` | 当前 cwd | `TMUXD_WORKSPACE` | 新会话不给 `cwd` 时用它 |
 | `shell` | tmux 的默认 | `TMUXD_SHELL` | 不给 `cmd` 时跑什么(写进 `default-shell`) |
@@ -51,7 +53,7 @@ Tmuxd(port=None, *, bind=None, token=None, socket=None, workspace=None,
 1. 解析实例名 → tmux socket(`tmuxd` 或 `tmuxd-<name>`)与状态目录;
 2. 找到 tmux 并 `tmux -V`,**低于 3.0 抛 `TmuxMissing`** —— 这两步都不启动任何 tmux 进程;
 3. 渲染一份 `tmux.conf` 到状态目录(`history-limit` / `window-size latest` / `status off`);
-4. **确保端口上有一个 ttyd** —— 起一个,或接手一个已经在跑的(见下)。
+4. **确保那个地址上有一个 ttyd**(端口,或 socket)—— 起一个,或接手一个已经在跑的(见下)。
 
 任何一步失败都在**这里**抛,不拖到有人打开浏览器才炸。
 
@@ -61,11 +63,12 @@ Tmuxd(port=None, *, bind=None, token=None, socket=None, workspace=None,
 
 ttyd 不持有任何会话状态(它只 exec `attach.sh`),所以复用是安全的:
 
-| 端口上是什么 | 行为 |
+| 端口 / socket 上是什么 | 行为 |
 | --- | --- |
 | 空的 | 起一个,**归我管**(我 `close()` 它就走) |
-| 已有一个 tmuxd 起的 ttyd(同 socket) | **接手用**,不重起;**我 `close()` 它不走** |
-| 别人的东西 | 抛 `PortInUse`,不猜、不抢 |
+| 一个没人应答的 socket 文件(ttyd 被 SIGKILL 留下的) | 删掉,起一个 |
+| 已有一个 tmuxd 起的 ttyd(同 socket、同 `base_path`) | **接手用**,不重起;**我 `close()` 它不走** |
+| 别人的东西,或前缀不同的 ttyd | 抛 `PortInUse`(`details` 里是 `port` 或 `path`),不猜、不抢 |
 
 这让"Web 后端每次重启 worker 都 `Tmuxd(port=…)` 一下"变成安全操作 ——
 否则每次重启要么撞端口,要么把用户正连着的网页踢掉。
@@ -104,8 +107,9 @@ t.info()["ttyd"]["owned"]     # 这个 ttyd 是不是我起的
   "version": "1.0.0",
   "socket": "default",
   "state_dir": "/home/me/.tmuxd/default",
-  "ttyd": {"version": "1.7.7", "port": 12345, "bind": "127.0.0.1",
-           "pid": 41822, "owned": True, "listening": True},
+  "ttyd": {"version": "1.7.7", "listen": "tcp", "port": 12345, "bind": "127.0.0.1",
+           "socket_path": None, "base_path": None,
+           "pid": 41822, "owned": True, "bin": "…", "source": "path"},
   "tmux": {"bin": "/usr/bin/tmux", "version": "3.3a",
            "socket": "tmuxd", "running": True},
   "sessions": {"total": 4, "alive": 3, "exited": 1, "external": 0},
@@ -134,6 +138,39 @@ app.include_router(router(t), prefix="/tmuxd")
 
 这样鉴权、日志、CORS、限流全走**你自己那套**。七个端点见
 [works/03 §9](../works/03-server.md)。
+
+### 窗也挂进来:`asgi(authorize=None) -> ASGI app`
+
+上面挂的是**控制 API**。**窗**(ttyd 那一页和它的 WebSocket)是另一件事,另一个 extra:
+
+```python
+from fastapi import FastAPI                      # Starlette / Litestar / Quart 同理
+from tmuxd import Tmuxd                          # 需要 pip install "tmuxd[asgi]"
+
+t = Tmuxd(base_path="/tty")                      # ttyd 听在 socket 上,没有端口
+app = FastAPI()
+app.mount("/tty", t.asgi(authorize=gate))        # 放在前端静态资源的 mount 之前
+
+t.session(id="id5").url                          # "/tty/?arg=id5" —— 同源相对地址
+```
+
+窗从你的端口、你的门进来:不用多开一个端口,也没有第二套认证。
+转发只搬字节(HTTP 原样、WebSocket 两个方向对拷帧、`tty` 子协议透传),不解析 ttyd 的协议。
+
+**谁能过,全看 `authorize(scope)`**(同步、异步都行)。每个请求都问 —— 页面、`/token`、`/ws`、静态资源:
+
+| 返回 | 结果 |
+| --- | --- |
+| 假 | HTTP 403;WebSocket 握手时关掉,code 1008 |
+| `True` | 放行 |
+| `[(name, value), …]` | 放行,并把这些头加到 HTTP 响应上(核过票种个 cookie) |
+
+iframe 和浏览器的 WebSocket 带不了 `Authorization` 头,所以典型的门是「票据换 cookie」:
+页面请求上核一张短期票、种 `Path=/tty` 的 HttpOnly cookie;`/ws` 凭 cookie 放行,
+并核对 `scope["query_string"]` 里的 `arg` 就是票上那个会话 —— 一张票只开一扇窗。
+
+ttyd 的生死**仍归这个 `Tmuxd`**(构造时起、`close()` 收);ASGI app 只转发,ttyd 没了回 502。
+宿主保持单 worker。设计和取舍见 [works/08](../works/08-one-door.md)。
 
 要一个**独立**的 server(CLI 就靠它),那是 `tmuxd serve`,
 见 [CLI · server](../cli/server.md)。
@@ -175,7 +212,9 @@ t.kill_tmux_server()      # 等价于 tmux -L tmuxd kill-server
 
 | 属性 | 例 |
 | --- | --- |
-| `port` / `bind` / `token` | `12345` / `"127.0.0.1"` / `"changeme"` |
+| `listen` | `"unix"` / `"tcp"` |
+| `port` / `bind` / `token` | `12345` / `"127.0.0.1"` / `"changeme"`(socket 模式下 `port`、`bind` 是 `None`) |
+| `socket_path` / `base_path` | `"/home/me/.tmuxd/default/ttyd.sock"` / `"/tty"`(TCP 模式下 `socket_path` 是 `None`) |
 | `socket_name` | `"default"` —— 实例名 |
 | `tmux_socket` | `"tmuxd"` / `"tmuxd-ci"` —— 真正传给 `tmux -L` 的 |
 | `tmux_bin` / `tmux_version` | `"/usr/bin/tmux"` / `"3.3a"` |

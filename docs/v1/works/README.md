@@ -152,6 +152,7 @@ tmux ls          # 你自己的会话,一个不多一个不少
 | [05-consumers.md](05-consumers.md) | 谁该用它:shellbase 的迁移清单、与 webmuxd 的关系 |
 | [06-dependencies.md](06-dependencies.md) | 两个依赖两种态度:tmux 只探测,ttyd 自带兜底 |
 | [07-install.md](07-install.md) | `tmuxd install`(**辅助命令**):网络优先、自带兜底,两个二进制记进 `~/.tmuxd.json` |
+| [08-one-door.md](08-one-door.md) | **一扇门**:ttyd 走 unix socket,`t.asgi()` 让窗从宿主的端口、宿主的登录进去 |
 
 ## 明确不做
 
@@ -165,7 +166,8 @@ tmux ls          # 你自己的会话,一个不多一个不少
 - ❌ **接管用户已有的 tmux** —— 只探测二进制,一律 `-L` 开专属池([01 §4](01-library.md))
 - ❌ **打包或编译 tmux** —— 它在契约里,自带一份就不再是"你的 tmux"([06 §2](06-dependencies.md))
 - ❌ **URI / 寻址协议** —— 调用方自己算 id,那层方言留在懂它的地方([02 §2.2](02-session.md))
-- ❌ **反向代理 / 自己发明的 URL 路径** —— 用 ttyd 原生的 `?arg=`([02 §3](02-session.md))
+- ❌ **反向代理 / 自己发明的 URL 路径** —— 用 ttyd 原生的 `?arg=`([02 §3](02-session.md))。
+  `t.asgi()` 不算:它是递给宿主的网关零件,挂不挂、谁能过都是宿主说了算([08 §5](08-one-door.md))
 - ❌ **自研终端渲染** —— 网页那半是 ttyd 的活,不重写
 - ❌ **多租户 / RBAC / 配额** —— 拿到凭据即拥有这批会话,边界靠网络和容器
 - ❌ **数据库** —— 状态是几个小 JSON,真相在 `tmux ls` 里

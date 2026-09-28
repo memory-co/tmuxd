@@ -20,6 +20,7 @@ fixture 来源)和 `test.py`。相关的用例合并在一个场景下,跟「按
 | [`typing_in/`](typing_in/) | **唯一的写入动作**:`send()` 字面量(那句 `Enter the code` 不能变成回车)、前导横杠不是选项、`send_key()` 真的按下去了(`C-c` 打断 `cat`)、返回只意味着"字符交出去了" |
 | [`the_entrance/`](the_entrance/) | **人从哪进来**:URL 就是 ttyd 原生的 `?arg=`,算它不需要活着的 Python 进程;token 由 ttyd 把关;`?arg=` 是调用方可控的,所以 `attach.sh` 在 pty 创建点只 attach、从不创建 |
 | [`port_reuse/`](port_reuse/) | **端口上已经有 ttyd 了怎么办**:空着就起一个(归我管)、是自己人就接手(接手方 `close()` 不带走它)、是陌生人就 `PortInUse` 不猜不抢;外加"看得见门开着而不必自己开一个" |
+| [`one_door/`](one_door/) | **窗从宿主的门进来**:不给端口就是 0600 的 unix socket、给了 `port=` 仍是 TCP;URL 是相对的 `/tty/?arg=`;socket 上的接手 / 陌生人 / SIGKILL 遗骸;`t.asgi()` 端到端搬终端(WebSocket 输入真进了 tmux);钩子看得到每条路、能按 `arg` 把票限死在一扇窗、能种 cookie |
 | [`your_tmux_untouched/`](your_tmux_untouched/) | **装一个服务不该动到你手里正在跑的东西**:专属 socket、`socket="default"` 直接报错、server 不存在时 `sessions()` 是 `[]` 而不是抛、`external` 只列不收编、**GC 只删 JSON 永远不 kill** |
 | [`nothing_reads/`](nothing_reads/) | **守门测试:断言“没有”**。没有 capture / run / stream / 事件流 / rename / 远程客户端,库也不自己起 HTTP server;**`import tmuxd` 不把 FastAPI 拖进来**(零依赖全靠这条)。要加,先改 `works/03-server.md` 的论证再让这里红掉 |
 | [`control_api/`](control_api/) | **CLI 打的那个口不发明东西**:七个端点各对应一个库方法、`POST` 同样是有则接上、错误体是库异常的投影、`Idempotency-Key` 防重放(断言的是**屏幕上只出现一次**)、返回的 `url` 指向 ttyd 而不是管控口;外加“把 router 挂进别人的 app” |

@@ -31,6 +31,11 @@ Send that URL to anyone and their browser is *in* that terminal — watching, an
 able to take over the keyboard. **A program hands out the work; a person watches
 it run.**
 
+Inside a web backend that window needs **no port of its own and no second
+password**: ttyd listens on a unix socket, `t.asgi()` mounts it under your own
+routes, and your login decides who gets into which window — see
+[Where the window opens](https://github.com/memory-co/tmuxd/blob/main/README.en.md#where-the-window-opens-two-doors).
+
 ## Quick start
 
 Needs `tmux` (≥ 3.0) and `ttyd` on the machine — see [Requirements](https://github.com/memory-co/tmuxd/blob/main/README.en.md#requirements).
@@ -52,6 +57,33 @@ with Tmuxd(port=12345, token="changeme") as t:
 
 Your process holds the instance, so there is nothing else to run.
 
+### Inside a web backend — the window on your port, behind your login
+
+```bash
+pip install "tmuxd[asgi]"       # + websockets; your ASGI server needs WebSocket support (e.g. uvicorn[standard])
+```
+
+```python
+from fastapi import FastAPI
+from tmuxd import Tmuxd
+
+app = FastAPI()
+t = Tmuxd(base_path="/tty")          # no port: ttyd listens on ~/.tmuxd/tmuxd/ttyd.sock (0600)
+
+def gate(scope):
+    """Asked on every request into the window: the page, /token, /ws."""
+    return my_login_allows(scope)    # your own login state, e.g. from a cookie
+
+app.mount("/tty", t.asgi(authorize=gate))
+
+@app.post("/api/work")
+def start_work():
+    s = t.session(id="job-1", cmd="claude")
+    return {"window": s.url}         # "/tty/?arg=job-1" -- same-origin, drop it in an iframe
+```
+
+One port, your app's. The window and your API share one door — see the next section.
+
 ### From the command line — needs a server
 
 ```bash
@@ -70,6 +102,60 @@ tmuxd stop                      # stops the server; sessions keep running
 A CLI command lives for milliseconds and can hold neither ttyd nor session
 state, so it asks a server that can. That is why the CLI and the server install
 together — [why](https://github.com/memory-co/tmuxd/blob/main/docs/v1/works/03-server.md).
+
+## Where the window opens: two doors
+
+The ttyd page — the window a person looks through — can open in one of two
+places, **decided by the constructor**:
+
+|  | ttyd on its own port (TCP) | mounted in your app (unix socket) |
+| --- | --- | --- |
+| Written as | `Tmuxd(port=12345, token=…)` | `Tmuxd(base_path="/tty")` + `app.mount("/tty", t.asgi(authorize=gate))` |
+| ttyd listens on | `127.0.0.1:12345` (or your `bind`) | `<state_dir>/<socket>/ttyd.sock`, mode 0600 |
+| `s.url` | `http://127.0.0.1:12345/?arg=id5` | `/tty/?arg=id5` (relative, same-origin) |
+| Who gets in | whoever has the token (basic auth, one for everyone) | your `gate(scope)` decides — per person, per window |
+| Ports to open | one more, firewall included | none beyond your app's |
+| Fits | scripts, one machine, the CLI (`tmuxd start` is always this) | a web backend that already has a login |
+
+**The rule: `port=` (or `TMUXD_PORT`, or `listen="tcp"`) means TCP; nothing at all means the socket.**
+
+> ⚠️ **This is a breaking change.** In 2.1.0, `Tmuxd()` without a port picked a
+> random free TCP port. Now it opens the socket, `s.url` is relative, and nobody
+> gets in until something mounts `t.asgi()`. For the old behaviour write
+> `Tmuxd(listen="tcp")`. See the [changelog](https://github.com/memory-co/tmuxd/blob/main/CHANGELOG.md).
+
+**Why the second door exists.** With its own port, the window sits outside
+your door: one more port for the firewall, and one more password — a plaintext
+token shared by everyone, unrelated to your login, so holding it skips the login
+entirely and neither logging out nor changing a password touches it. Mounted in
+your app, the window and the API share one port and one door.
+
+**Writing the gate.** `authorize(scope)` gets the raw ASGI scope (path, query,
+headers, cookies) and may be sync or async:
+
+| Returns | Result |
+| --- | --- |
+| falsy | HTTP 403; the WebSocket handshake is closed (1008) |
+| `True` | allowed |
+| `[(name, value), …]` | allowed, with these headers added to the response — a cookie set after checking a ticket, say |
+
+An iframe and a browser WebSocket cannot send an `Authorization` header, so the
+usual shape is **ticket for cookie**: attach a short-lived one-time ticket to the
+window URL, check it on the page request and set an HttpOnly cookie with
+`Path=/tty`; let `/ws` in on that cookie **and check that `?arg=` is the session
+on the ticket** — one ticket, one window.
+
+Worth knowing:
+
+- `base_path` must match the mount prefix (`"/tty"` with `"/tty"`);
+- the relay moves bytes and never parses ttyd's protocol; **ttyd's lifetime still
+  belongs to `Tmuxd`** (started at construction, stopped by `close()`), and a
+  gone ttyd is a 502;
+- keep the host at **one worker**; behind another proxy, raise the WebSocket idle timeout;
+- the window is same-origin with your page, so ttyd's frontend JS can read your
+  page's localStorage. For a stricter line, serve `/tty` from its own subdomain.
+
+Design and trade-offs: [works/08 · one door](https://github.com/memory-co/tmuxd/blob/main/docs/v1/works/08-one-door.md).
 
 ## What makes it different
 
@@ -90,21 +176,23 @@ together — [why](https://github.com/memory-co/tmuxd/blob/main/docs/v1/works/03
 - **A person and a program type into the same terminal.** Not a feature we
   built — tmux gives it away, which is why the whole design is arranged
   around it.
-- **No permission tiers.** Everything is read-write. Holding the token means
-  holding a shell on that machine, so a read-only switch here would be a
-  boundary that is not really there. Lock upstairs, where identity exists.
+- **No permission tiers.** Everything is read-write. Getting into a window
+  means holding a shell on that machine, so a read-only switch here would be a
+  boundary that is not really there. Lock upstairs, where identity exists —
+  mounted in your app, upstairs is your `gate(scope)`.
 
 ## Two ways in
 
-|  | Library | CLI |
-| --- | --- | --- |
-| Holds the instance | your process | `tmuxd serve` |
-| Needs a server | **no** | **yes** |
-| Install | `pip install tmuxd` | `pip install "tmuxd[server]"` |
-| Ports | ttyd only | ttyd + control API |
-| Exposing it | mount `tmuxd.server.router()` in the app you already run | control API (random port) |
+|  | Library (mounted in your app) | Library (ttyd on its own port) | CLI |
+| --- | --- | --- | --- |
+| Holds the instance | your process | your process | `tmuxd serve` |
+| Needs a server | **no** (uses yours) | **no** | **yes** |
+| Install | `pip install "tmuxd[asgi]"` | `pip install tmuxd` | `pip install "tmuxd[server]"` |
+| Ports | **none** (ttyd is on a socket) | ttyd | ttyd + control API |
+| The window | `app.mount("/tty", t.asgi(…))` | ttyd's port | ttyd's port |
+| Programs call it | the library directly; mount `tmuxd.server.router()` to offer HTTP | same | control API (random port) |
 
-Two ports, two audiences. **One is ttyd and it is for people** — `s.url` goes
+The CLI's two ports, two audiences. **One is ttyd and it is for people** — `s.url` goes
 straight to a colleague. **The other is the control API and it is for programs** —
 JSON in, JSON out, seven endpoints. **Both are free ports picked at startup**: 7681
 is ttyd's own default, which makes it the likeliest port for your own ttyd to be
@@ -135,6 +223,10 @@ packages, so re-shipping it would do badly what brew does well. macOS gets the
 **Windows is not supported** — tmux has no Windows build, and tmuxd imports
 `fcntl`.
 
+**Optional extras:** `tmuxd[asgi]` adds `websockets` (for the ttyd side of
+`t.asgi()`); `tmuxd[server]` adds `fastapi` + `uvicorn` (for the CLI and the
+control API). `import tmuxd` itself always has zero dependencies.
+
 **If your machine is not ready** — an architecture no wheel covers, no tmux, or
 you want a newer ttyd than the one we vendored — there is an optional
 [`tmuxd install`](https://github.com/memory-co/tmuxd/blob/main/docs/v1/cli/install.md). It fetches a checksum-verified ttyd
@@ -150,7 +242,7 @@ dedicated socket, so `tmux ls` shows exactly what it showed before.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # ~198 tests, ~50s
+pytest                              # ~234 tests, ~70s
 pytest tests/exact_targeting -v     # a single scenario
 ```
 

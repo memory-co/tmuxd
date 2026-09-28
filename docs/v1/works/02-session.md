@@ -117,6 +117,7 @@ print(s.url)        # http://localhost:12345/?arg=id5
 **就是 ttyd 自己的地址。** 没有反向代理、没有 `/s/<id>/` 这类自己发明的路径、
 没有 302 跳转 —— `?arg=` 是 ttyd 打开 `-a` 之后原生就有的传参方式,
 tmuxd 只是把 id 填进去([01 §2](01-library.md))。
+socket 模式下它是相对的 `/tty/?arg=id5`,宿主把窗挂在哪它就在哪([08](08-one-door.md))。
 
 早先的稿子在这里放过一个 `GET /api/attach` 端点,收到 id 后查会话、按需创建、
 再 302 到 ttyd。**删掉了** —— 那一跳的三件事,现在各归各位:

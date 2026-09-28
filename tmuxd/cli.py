@@ -221,8 +221,10 @@ def cmd_serve(args):
     except ModuleNotFoundError as exc:
         return _fail(str(exc), EXIT_FAIL)
 
+    # TCP, always: a CLI user opens the URL straight in a browser, and there
+    # is no host application here to mount a socket behind its own door.
     t = Tmuxd(
-        port=s.port, bind=s.bind, token=s.token, socket=s.socket,
+        port=s.port, listen="tcp", bind=s.bind, token=s.token, socket=s.socket,
         history_limit=s.conf.get("history-limit"),
         tmux_bin=s.conf.get("tmux-bin") or None,
         state_dir=s.root,

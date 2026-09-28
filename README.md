@@ -32,6 +32,9 @@ print(s.url)                              # http://127.0.0.1:12345/?arg=id5
 那个 URL 发给谁,谁的浏览器就**在这个终端里** —— 看得见,也能直接接手敲。
 **程序把活派下去,人看着它跑。**
 
+嵌进一个 Web 后端时,这扇窗**不用另开端口,也不用另一套密码**:ttyd 听在一个 unix socket 上,
+`t.asgi()` 把它挂到你自己的路由下,谁能进哪扇窗由你的登录说了算 —— 见[窗开在哪](#窗开在哪两扇门)。
+
 ## 快速开始
 
 机器上要有 `tmux`(≥ 3.0)和 `ttyd` —— 见[依赖](#依赖)。
@@ -53,6 +56,33 @@ with Tmuxd(port=12345, token="changeme") as t:
 
 实例在你自己的进程里,没有别的东西要起。
 
+### 嵌进 Web 后端 —— 窗走你的端口、你的登录
+
+```bash
+pip install "tmuxd[asgi]"       # + websockets;你的 ASGI server 要带 WebSocket(如 uvicorn[standard])
+```
+
+```python
+from fastapi import FastAPI
+from tmuxd import Tmuxd
+
+app = FastAPI()
+t = Tmuxd(base_path="/tty")          # 不给端口:ttyd 听在 ~/.tmuxd/tmuxd/ttyd.sock(0600)
+
+def gate(scope):
+    """每个进窗的请求都问一次:页面、/token、/ws。返回 True 放行,False 拒绝。"""
+    return my_login_allows(scope)    # 你自己的登录态,比如从 cookie 里认人
+
+app.mount("/tty", t.asgi(authorize=gate))
+
+@app.post("/api/work")
+def start_work():
+    s = t.session(id="job-1", cmd="claude")
+    return {"window": s.url}         # "/tty/?arg=job-1" —— 同源相对地址,前端直接塞进 iframe
+```
+
+只有你的 app 一个端口。窗和你的 API 走同一扇门 —— 详见下一节。
+
 ### 用命令行 —— 需要一个 server
 
 ```bash
@@ -72,6 +102,50 @@ tmuxd stop                      # 停的是 server,会话照跑
 所以它只能**去问一个持得住的东西**。CLI 和 server 因此是一起装的
 —— [为什么](docs/v1/works/03-server.md)。
 
+## 窗开在哪:两扇门
+
+ttyd 那一页(人看的那扇窗)可以开在两种地方,**由构造参数决定**:
+
+|  | ttyd 自己一个端口(TCP) | 挂进你的 app(unix socket) |
+| --- | --- | --- |
+| 怎么写 | `Tmuxd(port=12345, token=…)` | `Tmuxd(base_path="/tty")` + `app.mount("/tty", t.asgi(authorize=gate))` |
+| ttyd 听在 | `127.0.0.1:12345`(或你给的 `bind`) | `<state_dir>/<socket>/ttyd.sock`,权限 0600 |
+| `s.url` | `http://127.0.0.1:12345/?arg=id5` | `/tty/?arg=id5`(相对,同源) |
+| 谁能进 | 知道 token 的人(basic auth,全员一个) | 你的 `gate(scope)` 说了算 —— 按人、按窗 |
+| 要开几个口 | 多一个,防火墙要放 | 不多开,就是你 app 那一个 |
+| 适合 | 脚本、单机、CLI(`tmuxd start` 永远是这种) | 已经有登录的 Web 后端 |
+
+**怎么选的:给了 `port=`(或 `TMUXD_PORT`、`listen="tcp"`)就是 TCP;什么都不给就是 socket。**
+
+> ⚠️ **这是一处不兼容改动。** 2.1.0 里 `Tmuxd()` 不给端口会挑一个随机 TCP 口;
+> 现在它开的是 socket,`s.url` 变成相对地址,不 mount `t.asgi()` 就没人进得去。
+> 想要原来的行为,写 `Tmuxd(listen="tcp")`。见[更新日志](CHANGELOG.md)。
+
+**为什么要有第二种。** ttyd 自己占一个口,窗就在你的门外:多一个端口要开防火墙;
+多一套认证 —— 一个明文、全员共用的 token,跟你的登录毫无关系,拿到它的人绕过登录直接进 shell,
+你的登出、改密码也管不到它。挂进你的 app 之后,窗和 API 走同一个端口、同一扇门。
+
+**门怎么写。** `authorize(scope)` 拿到原始 ASGI scope(path、query、headers、cookie 都在),同步异步都行:
+
+| 返回 | 结果 |
+| --- | --- |
+| 假 | HTTP 403;WebSocket 握手时关掉(1008) |
+| `True` | 放行 |
+| `[(name, value), …]` | 放行,并把这些头加到响应上 —— 比如核过一张票后种 cookie |
+
+iframe 和浏览器的 WebSocket 带不了 `Authorization` 头,所以常见做法是**票据换 cookie**:
+给窗地址附一张短期一次性票,页面请求上核票、种一个 `Path=/tty` 的 HttpOnly cookie,
+之后的 `/ws` 凭 cookie 进,**并核对 `?arg=` 就是票上那个会话** —— 一张票只开一扇窗。
+
+几件要知道的事:
+
+- `base_path` 要和 mount 的前缀一致(`"/tty"` 配 `"/tty"`);
+- 转发只搬字节,不解析 ttyd 的协议;**ttyd 的生死仍归 `Tmuxd`**(构造时起、`close()` 收),ttyd 没了回 502;
+- 宿主保持**单 worker**;前面再有代理时,WebSocket 的空闲超时要放宽;
+- 窗和你的页面同源,ttyd 的前端 JS 读得到你页面的 localStorage。要更严就把 `/tty` 放到独立子域。
+
+设计和取舍:[works/08 · 一扇门](docs/v1/works/08-one-door.md)。
+
 ## 它和别的东西不一样在哪
 
 **这份设计是一路减出来的。** 减掉的每一样,都比留下的更能说明它是什么。
@@ -87,20 +161,22 @@ tmuxd stop                      # 停的是 server,会话照跑
   你的 `tmux ls` 一个不多一个不少。
 - **人和程序敲的是同一个终端。** 这不是我们做的功能,是 tmux 白送的 ——
   也正因为白送,整个设计才围着它转。
-- **不分权限档。** 全部可读可写。拿到 token 就是拿到这台机器的 shell,
-  在这一层加个只读开关只是**假的边界**。要锁,往有身份的上层去锁。
+- **不分权限档。** 全部可读可写。进得了窗就是拿到这台机器的 shell,
+  在这一层加个只读开关只是**假的边界**。要锁,往有身份的上层去锁 ——
+  挂进你的 app 时,那个上层就是你的 `gate(scope)`。
 
 ## 两条链路
 
-|  | 库 | CLI |
-| --- | --- | --- |
-| 谁持有实例 | 你的进程 | `tmuxd serve` |
-| 要 server 吗 | **不要** | **要** |
-| 装什么 | `pip install tmuxd` | `pip install "tmuxd[server]"` |
-| 开几个口 | 只有 ttyd | ttyd + 管控口 |
-| 怎么暴露 | 把 `tmuxd.server.router()` 挂进你已经在跑的 app | 管控口(随机) |
+|  | 库(挂进你的 app) | 库(ttyd 自己一个口) | CLI |
+| --- | --- | --- | --- |
+| 谁持有实例 | 你的进程 | 你的进程 | `tmuxd serve` |
+| 要 server 吗 | **不要**(用你的) | **不要** | **要** |
+| 装什么 | `pip install "tmuxd[asgi]"` | `pip install tmuxd` | `pip install "tmuxd[server]"` |
+| 开几个口 | **零个**(ttyd 在 socket 上) | ttyd | ttyd + 管控口 |
+| 窗怎么暴露 | `app.mount("/tty", t.asgi(…))` | ttyd 的端口 | ttyd 的端口 |
+| 程序怎么调 | 直接调库;要给别人 HTTP 就挂 `tmuxd.server.router()` | 同左 | 管控口(随机) |
 
-**两个口,两拨用户。** 一个是 ttyd,**给人的** —— `s.url` 直接发给同事就行;
+**CLI 的两个口,两拨用户。** 一个是 ttyd,**给人的** —— `s.url` 直接发给同事就行;
 另一个是管控口,**给程序的** —— JSON 进 JSON 出,七个端点。
 **两个都是启动时随便挑的空闲口** —— 7681 正是 ttyd 自己的默认端口,也就最可能被你
 自己那个 ttyd 占着,固定用它等于主动找架吵。端口记在 `~/.tmuxd/daemon.json` 里,
@@ -127,6 +203,9 @@ macOS 装的是 `py3-none-any` 那个 wheel —— 哪都装得上,只是要求 
 
 **不支持 Windows** —— tmux 没有 Windows 版,而 tmuxd 顶层 `import fcntl`。
 
+**可选的 extra:** `tmuxd[asgi]` 加 `websockets`(`t.asgi()` 连 ttyd 那一侧要用);
+`tmuxd[server]` 加 `fastapi` + `uvicorn`(CLI 和控制 API 要用)。`import tmuxd` 本身永远零依赖。
+
 **环境不齐的话** —— 冷门架构、没装 tmux、或者想要比自带更新的 ttyd —— 有一条可选的
 [`tmuxd install`](docs/v1/cli/install.md):从上游下一份**验过校验和**的 ttyd
 (网络不通就退回包里自带的),tmux 则告诉你这台机器上确切该敲哪条命令;
@@ -140,7 +219,7 @@ tmuxd 永远不会接管你自己在用的那个 tmux:它在专属 socket 上开
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 约 198 个用例,约 50 秒
+pytest                              # 约 234 个用例,约 70 秒
 pytest tests/exact_targeting -v     # 单个场景
 ```
 

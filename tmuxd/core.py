@@ -1,9 +1,12 @@
 """``Tmuxd`` -- the object everything else is a shell around.
 
-    t = Tmuxd(port=12345, token="changeme")   # ttyd is up; tmux is not yet
+    t = Tmuxd(base_path="/tty")               # ttyd is up; tmux is not yet
     s = t.session(id="id5", cwd="~/proj", cmd="claude")
     s.send("run the tests", enter=True)
-    print(s.url)
+    print(s.url)                              # /tty/?arg=id5
+    app.mount("/tty", t.asgi(authorize=gate)) # the window, behind your door
+
+    Tmuxd(port=12345, token="changeme")       # or: ttyd on a port of its own
 
 The CLI and the HTTP endpoint call exactly this. Nothing lives above it.
 """
@@ -50,6 +53,25 @@ def free_port(bind="127.0.0.1"):
         return probe.getsockname()[1]
 
 
+# sun_path is 108 bytes on Linux and 104 on macOS; take the smaller, and keep
+# one for the NUL.
+_MAX_SOCKET_PATH = 103
+
+
+def _base_path(value):
+    """``"/tty/"`` -> ``"/tty"``; ``""`` / ``"/"`` -> ``None`` (no prefix)."""
+    if value is None:
+        return None
+    value = value.rstrip("/")
+    if not value:
+        return None
+    if not value.startswith("/"):
+        raise ValueError("base_path must start with '/', got %r" % value)
+    if len(value) > 128:
+        raise ValueError("base_path is longer than ttyd accepts (128)")
+    return value
+
+
 def _env(name, default=None):
     value = os.environ.get(name)
     return default if value in (None, "") else value
@@ -60,6 +82,8 @@ class Tmuxd:
         self,
         port=None,
         *,
+        listen=None,
+        base_path=None,
         bind=None,
         token=None,
         socket=None,
@@ -85,13 +109,43 @@ class Tmuxd:
         # that outlives its connection is tmux's half, and a person getting in
         # from a browser is ttyd's, and without the second one this is a tmux
         # wrapper rather than tmuxd (works/01-library.md §2).
-        self.bind = bind or _env("TMUXD_BIND", "127.0.0.1")
-        # No fixed default port. 7681 is *ttyd's* default, so it is exactly the
-        # port a user's own ttyd is most likely already sitting on -- picking it
-        # is picking a fight. Asked for a port, we use it; not asked, we take a
-        # free one and write it down (works/01 §5).
-        self.port = int(port if port is not None
-                        else _env("TMUXD_PORT") or free_port(self.bind))
+        #
+        # Where ttyd listens is one of two things (works/01 §5):
+        #   "unix"  a socket in the state dir. Nobody reaches the window except
+        #           through a host that mounts t.asgi() -- one port, one door.
+        #   "tcp"   a port of its own. The page is its own door (basic auth).
+        # Passing port= is asking for TCP, so Tmuxd(port=...) means what it
+        # always meant; asking for neither gets the socket.
+        if isinstance(listen, (tuple, list)):
+            kind, listen_port = listen
+            if kind != "tcp":
+                raise ValueError("listen=(kind, port) only makes sense for 'tcp'")
+            if port is not None and int(port) != int(listen_port):
+                raise ValueError("port=%s and listen=%r disagree" % (port, listen))
+            listen, port = "tcp", listen_port
+        listen = listen or _env("TMUXD_LISTEN") or (
+            "tcp" if port is not None or _env("TMUXD_PORT") else "unix")
+        if listen not in ("unix", "tcp"):
+            raise ValueError("listen must be 'unix' or 'tcp', got %r" % (listen,))
+        self.listen = listen
+        self.base_path = _base_path(
+            base_path if base_path is not None else _env("TMUXD_BASE_PATH"))
+
+        if listen == "unix":
+            if port is not None or bind is not None:
+                raise ValueError(
+                    "listen='unix' has no port or bind -- ttyd is on a socket in "
+                    "the state dir. Pass listen='tcp' to give it a port.")
+            self.bind = None
+            self.port = None
+        else:
+            self.bind = bind or _env("TMUXD_BIND", "127.0.0.1")
+            # No fixed default port. 7681 is *ttyd's* default, so it is exactly
+            # the port a user's own ttyd is most likely already sitting on --
+            # picking it is picking a fight. Asked for a port, we use it; not
+            # asked, we take a free one and write it down (works/01 §5).
+            self.port = int(port if port is not None
+                            else _env("TMUXD_PORT") or free_port(self.bind))
         self.token = token if token is not None else _env("TMUXD_TOKEN")
         self.url_host = url_host or _env("TMUXD_URL_HOST")
         self.workspace = os.path.abspath(
@@ -103,7 +157,8 @@ class Tmuxd:
         )
         self.gc_ttl = float(gc_ttl or _env("TMUXD_GC_TTL", DEFAULT_GC_TTL))
 
-        if self.bind not in ("127.0.0.1", "localhost", "::1") and not self.token:
+        if self.listen == "tcp" and not self.token \
+                and self.bind not in ("127.0.0.1", "localhost", "::1"):
             raise ValueError(
                 "binding %s without a token would put a shell on this machine on the "
                 "network. Set token=..." % self.bind
@@ -113,6 +168,13 @@ class Tmuxd:
         self.state_dir = os.path.join(root, self.socket_name)
         os.makedirs(self.state_dir, exist_ok=True)
         self._store = _state.Store(self.state_dir)
+        self.socket_path = None
+        if self.listen == "unix":
+            self.socket_path = os.path.join(self.state_dir, "ttyd.sock")
+            if len(os.fsencode(self.socket_path)) > _MAX_SOCKET_PATH:
+                raise ValueError(
+                    "%s is too long for a unix socket (max %d bytes). Pick a "
+                    "shorter state_dir." % (self.socket_path, _MAX_SOCKET_PATH))
 
         # ~/.tmuxd.json is read here, by default, and only for these two paths.
         # It holds where the binaries are -- a fact about the machine, the same
@@ -137,15 +199,20 @@ class Tmuxd:
         # one that can claim a path we already have in hand.
         self.ttyd_source = ("config" if self.ttyd_bin == recorded.get("ttyd")
                             else "bundled" if self.ttyd_is_bundled else "path")
+        # The record is named after the address, because the address is what
+        # two instances would fight over.
+        record = "ttyd-unix.json" if self.listen == "unix" else "ttyd-%d.json" % self.port
         self._ttyd = _ttyd.ensure(
             binary=self.ttyd_bin,
             port=self.port,
             bind=self.bind,
+            socket_path=self.socket_path,
+            base_path=self.base_path,
             token=self.token,
             attach_script=self._attach_script(),
             tmux_socket=self.tmux_socket,
             tmux_bin=self.tmux_bin,
-            state_path=os.path.join(self.state_dir, "ttyd-%d.json" % self.port),
+            state_path=os.path.join(self.state_dir, record),
         )
 
     # -- setup ----------------------------------------------------------
@@ -285,10 +352,32 @@ class Tmuxd:
     # -- entrance ---------------------------------------------------------
 
     def url_for(self, sid):
+        """The window's address. Computed, never looked up.
+
+        Over a unix socket there is no host to name -- the window is wherever
+        the host application mounted :meth:`asgi` -- so the URL is relative
+        (``/tty/?arg=id5``) and the browser resolves it against the page.
+        """
+        path = "%s/?arg=%s" % (self.base_path or "", quote(sid, safe=""))
+        if self.listen == "unix":
+            return path
         host = self.url_host or (
             "127.0.0.1" if self.bind in ("0.0.0.0", "::", "") else self.bind
         )
-        return "http://%s:%d/?arg=%s" % (host, self.port, quote(sid, safe=""))
+        return "http://%s:%d%s" % (host, self.port, path)
+
+    def asgi(self, authorize=None):
+        """The window as an ASGI app, for a host to mount at ``base_path``.
+
+            app.mount("/tty", t.asgi(authorize=gate))
+
+        Bytes are relayed to ttyd untouched; who may pass is entirely
+        ``authorize(scope)``'s call. Needs ``tmuxd[asgi]``. ttyd's lifetime
+        stays with this ``Tmuxd`` -- the app only forwards.
+        """
+        from .asgi import TtydProxy
+
+        return TtydProxy(self, authorize=authorize)
 
     # -- introspection ----------------------------------------------------
 
@@ -307,8 +396,11 @@ class Tmuxd:
             "state_dir": self.state_dir,
             "ttyd": {
                 "version": self._ttyd.version,
+                "listen": self.listen,
                 "port": self._ttyd.port,
                 "bind": self._ttyd.bind,
+                "socket_path": self._ttyd.socket_path,
+                "base_path": self._ttyd.base_path,
                 "pid": self._ttyd.pid,
                 "owned": self._ttyd.owned,
                 "bin": self.ttyd_bin,
@@ -349,4 +441,5 @@ class Tmuxd:
         return False
 
     def __repr__(self):
-        return "<Tmuxd socket=%s port=%s>" % (self.socket_name, self.port)
+        where = "port=%s" % self.port if self.listen == "tcp" else "listen=unix"
+        return "<Tmuxd socket=%s %s>" % (self.socket_name, where)

@@ -8,9 +8,13 @@ Binding that lifetime cannot live in a ``finally`` -- under SIGKILL no Python
 code runs at all -- so it goes to the kernel via ``PR_SET_PDEATHSIG``.
 
 ttyd holds no session state; it only execs ``attach.sh``. That is what makes
-adoption safe: if a tmuxd-started ttyd is already listening on the port with
-the same socket, a new ``Tmuxd`` reuses it rather than fighting over the port
-or kicking connected browsers off (§3.1).
+adoption safe: if a tmuxd-started ttyd is already listening on the same address
+with the same socket, a new ``Tmuxd`` reuses it rather than fighting over the
+address or kicking connected browsers off (§3.1).
+
+"The same address" is one of two shapes: a TCP port (the page is its own door)
+or a unix socket (nobody reaches it but whoever this process lets through --
+see ``tmuxd.asgi``).
 """
 
 import ctypes
@@ -179,6 +183,19 @@ def port_open(host, port, timeout=0.25):
         return False
 
 
+def socket_open(path, timeout=0.25):
+    """Something is accepting on this unix socket, right now."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(timeout)
+    try:
+        probe.connect(path)
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 def pid_alive(pid):
     try:
         os.kill(pid, 0)
@@ -201,10 +218,13 @@ def _is_ttyd(pid):
 class Ttyd:
     """A running ttyd, either ours or one we adopted."""
 
-    def __init__(self, pid, port, bind, owned, popen=None, version=None):
+    def __init__(self, pid, port, bind, owned, popen=None, version=None,
+                 socket_path=None, base_path=None):
         self.pid = pid
         self.port = port
         self.bind = bind
+        self.socket_path = socket_path
+        self.base_path = base_path
         self.owned = owned
         self.version = version
         self._popen = popen
@@ -237,44 +257,72 @@ def version_of(binary):
 def ensure(
     *,
     binary,
-    port,
-    bind,
-    token,
     attach_script,
     tmux_socket,
     tmux_bin,
     state_path,
+    port=None,
+    bind=None,
+    socket_path=None,
+    base_path=None,
+    token=None,
     writable=True,
     startup_timeout=5.0,
 ):
-    """Reuse a compatible ttyd on this port, or start one.
+    """Reuse a compatible ttyd on this address, or start one.
 
-    Returns a :class:`Ttyd`. Raises :class:`PortInUse` when the port is taken
-    by something that is not ours -- guessing here would mean either hijacking
-    a stranger's service or silently talking to the wrong terminal.
+    The address is ``socket_path`` when given (a unix socket), otherwise
+    ``bind``:``port``. Returns a :class:`Ttyd`. Raises :class:`PortInUse` when
+    the address is taken by something that is not ours -- guessing here would
+    mean either hijacking a stranger's service or silently talking to the
+    wrong terminal. A ttyd of ours with a different ``base_path`` counts as a
+    stranger: adopting it would hand out URLs it does not answer.
     """
+    if socket_path:
+        where = {"path": socket_path}
+        listening = lambda: socket_open(socket_path)  # noqa: E731
+        described = socket_path
+    else:
+        where = {"port": port}
+        listening = lambda: port_open(bind, port)  # noqa: E731
+        described = "port %d" % port
+
     recorded = _read(state_path)
-    if recorded and recorded.get("port") == port:
+    if recorded and recorded.get("port") == port \
+            and recorded.get("socket_path") == socket_path:
         pid = recorded.get("pid")
         if (
             isinstance(pid, int)
             and pid_alive(pid)
             and _is_ttyd(pid)
             and recorded.get("tmux_socket") == tmux_socket
-            and port_open(bind, port)
+            and recorded.get("base_path") == base_path
+            and listening()
         ):
-            return Ttyd(pid, port, bind, owned=False, version=recorded.get("version"))
+            return Ttyd(pid, port, bind, owned=False, version=recorded.get("version"),
+                        socket_path=socket_path, base_path=base_path)
 
-    if port_open(bind, port):
+    if listening():
         raise PortInUse(
-            "port %d is already serving something that is not this tmuxd" % port,
-            port=port,
-        )
+            "%s is already serving something that is not this tmuxd" % described,
+            **where)
+    if socket_path and os.path.lexists(socket_path):
+        # Nobody answers on it: left behind by a ttyd that died by SIGKILL.
+        # Unlinking a dead socket frees the name; it disconnects no one.
+        os.unlink(socket_path)
 
-    argv = [binary, "-p", str(port), "-i", bind, "-a"]
+    if socket_path:
+        argv = [binary, "-i", socket_path]
+    else:
+        argv = [binary, "-p", str(port), "-i", bind]
+    argv.append("-a")
     if writable:
         argv.append("-W")
-    if token:
+    if base_path:
+        argv += ["-b", base_path]
+    if token and not socket_path:
+        # Over a unix socket the file mode is the door; basic auth on top
+        # would only make the browser prompt through the proxy.
         argv += ["-c", "tmuxd:%s" % token]
     argv.append(str(attach_script))
 
@@ -297,22 +345,29 @@ def ensure(
             out = (proc.stdout.read() or b"").decode("utf-8", "replace").strip()
             raise TtydFailed(
                 "ttyd exited immediately (%s)" % (out.splitlines()[-1] if out else proc.returncode),
-                port=port,
-            )
-        if port_open(bind, port):
+                **where)
+        if listening():
             break
         time.sleep(0.05)
     else:
         proc.terminate()
-        raise TtydFailed("ttyd did not start listening on port %d" % port, port=port)
+        raise TtydFailed("ttyd did not start listening on %s" % described, **where)
 
-    handle = Ttyd(proc.pid, port, bind, owned=True, popen=proc, version=version_of(binary))
+    if socket_path:
+        # libwebsockets creates it 0660 whatever the umask. Group members are
+        # not the person this process is serving; the owner is.
+        os.chmod(socket_path, 0o600)
+
+    handle = Ttyd(proc.pid, port, bind, owned=True, popen=proc, version=version_of(binary),
+                  socket_path=socket_path, base_path=base_path)
     _write(
         state_path,
         {
             "pid": proc.pid,
             "port": port,
             "bind": bind,
+            "socket_path": socket_path,
+            "base_path": base_path,
             "tmux_socket": tmux_socket,
             "version": handle.version,
             "started_by": os.getpid(),
