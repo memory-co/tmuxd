@@ -1,8 +1,9 @@
 # 更新日志
 
-## 未发布
+## 3.0.0
 
 **窗可以挂到宿主的路由上:ttyd 走 unix socket,`t.asgi()` 交出一个 ASGI app。**
+默认不鉴权(谁能连到宿主的端口谁就能进窗);上公网时传 `authorize`。
 设计见 [works/08](docs/v1/works/08-one-door.md)。
 
 ### 新增

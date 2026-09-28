@@ -17,7 +17,7 @@ and that is ``tmuxd serve`` plus the ``[server]`` extra (works/03-server.md).
 Design notes live in ``docs/v1/works/``.
 """
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
 
 from .core import Tmuxd
 from .errors import (
