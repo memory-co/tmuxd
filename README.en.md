@@ -139,6 +139,15 @@ headers, cookies) and may be sync or async:
 | `True` | allowed |
 | `[(name, value), …]` | allowed, with these headers added to the response — a cookie set after checking a ticket, say |
 
+**No `authorize` means everyone gets in.** The socket's 0600 only keeps other
+users on the machine from reaching ttyd directly; once `t.asgi()` is mounted,
+**anyone who can reach your app's port can open `/tty/?arg=<any id>` and have a
+shell** — looser than TCP mode's basic auth. Leave it out only when the host
+listens on `127.0.0.1` for yourself alone, or when something in front
+(Cloudflare Access, oauth2-proxy, a VPN) already authenticates every request.
+Your app's own `/api` auth middleware does **not** cover this route: an iframe
+and a WebSocket cannot send an `Authorization` header.
+
 An iframe and a browser WebSocket cannot send an `Authorization` header, so the
 usual shape is **ticket for cookie**: attach a short-lived one-time ticket to the
 window URL, check it on the page request and set an HttpOnly cookie with

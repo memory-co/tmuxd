@@ -372,7 +372,8 @@ class Tmuxd:
             app.mount("/tty", t.asgi(authorize=gate))
 
         Bytes are relayed to ttyd untouched; who may pass is entirely
-        ``authorize(scope)``'s call. Needs ``tmuxd[asgi]``. ttyd's lifetime
+        ``authorize(scope)``'s call -- and without one, everyone who reaches
+        the host may (see ``tmuxd.asgi``). Needs ``tmuxd[asgi]``. ttyd's lifetime
         stays with this ``Tmuxd`` -- the app only forwards.
         """
         from .asgi import TtydProxy

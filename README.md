@@ -133,6 +133,13 @@ ttyd 那一页(人看的那扇窗)可以开在两种地方,**由构造参数决�
 | `True` | 放行 |
 | `[(name, value), …]` | 放行,并把这些头加到响应上 —— 比如核过一张票后种 cookie |
 
+**不传 `authorize` 就是全放行。** socket 的 0600 只挡住本机别的用户直连 ttyd;
+挂上 `t.asgi()` 之后,**谁能连到你 app 的端口,谁就能打开 `/tty/?arg=<任意 id>` 拿到 shell**
+—— 比 TCP 模式的 basic auth 还松。所以只在两种情况下省掉它:
+宿主只听 `127.0.0.1`、自己一个人用;或者前面已经有一层统一认证(Cloudflare Access、
+oauth2-proxy、VPN)挡住了所有请求。宿主自己的 `/api` 鉴权中间件**罩不住**这里 ——
+iframe 和 WebSocket 带不了 `Authorization` 头。
+
 iframe 和浏览器的 WebSocket 带不了 `Authorization` 头,所以常见做法是**票据换 cookie**:
 给窗地址附一张短期一次性票,页面请求上核票、种一个 `Path=/tty` 的 HttpOnly cookie,
 之后的 `/ws` 凭 cookie 进,**并核对 `?arg=` 就是票上那个会话** —— 一张票只开一扇窗。

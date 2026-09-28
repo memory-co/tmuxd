@@ -20,6 +20,13 @@ Who may pass is not tmuxd's business -- it has no idea who anyone is. It asks
 It may be sync or async. It sees every request -- the page, ``/token``,
 ``/ws`` and the assets -- because each one is a way in.
 
+No ``authorize`` lets everyone in. The socket's 0600 only keeps other local
+users off ttyd; this app is what puts it back on a public port, so without a
+gate anyone who reaches the host can open ``?arg=<any id>``. Leave it out only
+when the host listens on loopback, or something in front already
+authenticates every request. The host's own ``Authorization``-header auth does
+not cover this: an iframe and a browser WebSocket cannot send that header.
+
 ASGI rather than a FastAPI router: this is a calling convention, not a
 framework, so FastAPI, Starlette, Litestar and Quart all mount it. Only WSGI
 cannot -- WSGI has no WebSocket, whoever implements it.

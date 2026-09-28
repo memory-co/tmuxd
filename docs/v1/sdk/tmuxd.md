@@ -165,6 +165,11 @@ t.session(id="id5").url                          # "/tty/?arg=id5" —— 同源
 | `True` | 放行 |
 | `[(name, value), …]` | 放行,并把这些头加到 HTTP 响应上(核过票种个 cookie) |
 
+**不传 `authorize` 就是全放行。** socket 的 0600 只挡本机别的用户;挂上之后,
+谁能连到你 app 的端口,谁就能打开 `/tty/?arg=<任意 id>` 拿到 shell。只在宿主只听 `127.0.0.1`、
+或者前面已有一层统一认证(Cloudflare Access、oauth2-proxy、VPN)时省掉它。
+你 app 里只拦 `/api` 的鉴权中间件罩不住这条路。
+
 iframe 和浏览器的 WebSocket 带不了 `Authorization` 头,所以典型的门是「票据换 cookie」:
 页面请求上核一张短期票、种 `Path=/tty` 的 HttpOnly cookie;`/ws` 凭 cookie 放行,
 并核对 `scope["query_string"]` 里的 `arg` 就是票上那个会话 —— 一张票只开一扇窗。
