@@ -74,7 +74,7 @@ def gate(scope):
     """Asked on every request into the window: the page, /token, /ws."""
     return my_login_allows(scope)    # your own login state, e.g. from a cookie
 
-app.mount("/tty", t.asgi(authorize=gate))
+app.mount("/tty", t.asgi(authorize=gate))   # no authorize = everyone in, see below
 
 @app.post("/api/work")
 def start_work():
@@ -83,6 +83,14 @@ def start_work():
 ```
 
 One port, your app's. The window and your API share one door — see the next section.
+
+> ⚠️ **`authorize` is optional, and leaving it out means no auth at all.** The
+> socket's 0600 only keeps other local users off ttyd; once mounted, anyone who
+> can reach your app's port can open `/tty/?arg=<any id>` and have a shell. Skip
+> it only when the host listens on `127.0.0.1` for yourself, or something in
+> front (Cloudflare Access, oauth2-proxy, a VPN) already authenticates every
+> request. Your app's `/api` auth middleware does **not** cover `/tty` — an
+> iframe and a WebSocket cannot send an `Authorization` header.
 
 ### From the command line — needs a server
 

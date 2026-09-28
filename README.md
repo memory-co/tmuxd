@@ -73,7 +73,7 @@ def gate(scope):
     """每个进窗的请求都问一次:页面、/token、/ws。返回 True 放行,False 拒绝。"""
     return my_login_allows(scope)    # 你自己的登录态,比如从 cookie 里认人
 
-app.mount("/tty", t.asgi(authorize=gate))
+app.mount("/tty", t.asgi(authorize=gate))   # 不传 authorize = 全放行,见下
 
 @app.post("/api/work")
 def start_work():
@@ -82,6 +82,11 @@ def start_work():
 ```
 
 只有你的 app 一个端口。窗和你的 API 走同一扇门 —— 详见下一节。
+
+> ⚠️ **`authorize` 可以不传,但不传就是不鉴权。** socket 的 0600 只挡本机别的用户;
+> 挂上之后,谁能连到你 app 的端口,谁就能打开 `/tty/?arg=<任意 id>` 拿到 shell。
+> 只有宿主只听 `127.0.0.1` 自己用,或者前面已经有一层统一认证(Cloudflare Access、oauth2-proxy、VPN)时,才可以不传。
+> 你 app 里拦 `/api` 的鉴权中间件**管不到** `/tty` —— iframe 和 WebSocket 带不了 `Authorization` 头。
 
 ### 用命令行 —— 需要一个 server
 
