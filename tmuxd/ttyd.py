@@ -330,19 +330,28 @@ def ensure(
     env["_TMUXD_SOCK"] = tmux_socket
     env["_TMUXD_TMUX"] = tmux_bin
 
-    proc = subprocess.Popen(
-        argv,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        preexec_fn=_pdeathsig,
-        start_new_session=False,
-    )
+    # ttyd logs a line or more for every connection, for as long as it runs.
+    # Never hand it a pipe: nobody reads the pipe after startup, and once the
+    # ~64 KiB kernel buffer fills, ttyd's next log write blocks its only event
+    # loop thread -- every window freezes and new connections pile up unaccepted.
+    # A file next to the state record never fills; truncated per start.
+    log_path = os.path.splitext(state_path)[0] + ".log"
+    with open(log_path, "wb") as log:
+        proc = subprocess.Popen(
+            argv,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            preexec_fn=_pdeathsig,
+            start_new_session=False,
+        )
 
     deadline = time.time() + startup_timeout
     while time.time() < deadline:
         if proc.poll() is not None:
-            out = (proc.stdout.read() or b"").decode("utf-8", "replace").strip()
+            with open(log_path, "rb") as log:
+                out = log.read().decode("utf-8", "replace").strip()
             raise TtydFailed(
                 "ttyd exited immediately (%s)" % (out.splitlines()[-1] if out else proc.returncode),
                 **where)
